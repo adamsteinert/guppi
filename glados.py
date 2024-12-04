@@ -541,10 +541,10 @@ class Glados:
 
         Args:
             line (dict): The line of text from the LLM server.
-        """
-
-        if not line["stop"]:
-            token = line["content"]
+        """  
+        #print(f"@@@@@  {line}   @@@@@")
+        if not line["done"]:
+            token = line["response"]
             return token
         return None
 
