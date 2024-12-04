@@ -24,11 +24,12 @@ from glados.llama import LlamaServer, LlamaServerConfig
 logger.remove(0)
 logger.add(sys.stderr, level="INFO")
 
-ASR_MODEL = "ggml-medium-32-2.en.bin"
+#ASR_MODEL = "ggml-medium-32-2.en.bin"
+ASR_MODEL = "ggml-medium.bin"
 VAD_MODEL = "silero_vad.onnx"
 LLM_STOP_SEQUENCE = "<|eot_id|>"  # End of sentence token for Meta-Llama-3
 LLAMA3_TEMPLATE = "{% set loop_messages = messages %}{% for message in loop_messages %}{% set content = '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'+ message['content'] | trim + '<|eot_id|>' %}{% if loop.index0 == 0 %}{% set content = bos_token + content %}{% endif %}{{ content }}{% endfor %}{% if add_generation_prompt %}{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}{% endif %}"
-PAUSE_TIME = 0.05  # Time to wait between processing loops
+PAUSE_TIME = 0.25  # Time to wait between processing loops
 SAMPLE_RATE = 16000  # Sample rate for input stream
 VAD_SIZE = 50  # Milliseconds of sample for Voice Activity Detection (VAD)
 VAD_THRESHOLD = 0.9  # Threshold for VAD detection
