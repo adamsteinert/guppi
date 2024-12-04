@@ -474,12 +474,12 @@ class Glados:
                 data = {
                     "stream": True,
                     "prompt": prompt,
+                    "model": "llama3.2:latest"
                 }
                 logger.debug(f"starting request on {self.messages=}")
                 logger.debug("Performing request to LLM server...")
 
                 # Perform the request and process the stream
-
                 with requests.post(
                     self.completion_url,
                     headers=self.prompt_headers,
