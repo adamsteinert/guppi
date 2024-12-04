@@ -162,3 +162,11 @@ cython_debug/
 # The large model files
 *.bin
 *.gguf
+models/.DS_Store
+
+submodules/.DS_Store
+
+# Ignore all mlmodelc files/directories
+models/ggml-*.mlmodelc/
+
+.DS_Store
