@@ -1,5 +1,5 @@
 Glados:
-  completion_url: ""
+  completion_url: "http://localhost:11434/api/generate"
   api_key: "Bearer your_api_key_here"
   announcement: "All neural network modules are now loaded. No network access detected. How very annoying. System Operational."
   # voice_model: "en_US-libritts_r-medium.onnx"
@@ -13,9 +13,9 @@ Glados:
     - assistant: "Yes, you should definitely try to be more interesting. Could I suggest juggling handguns?"
     - user: "What game should I play?"
     - assistant: "Russian Roulette. It's a great way to test your luck and make memories that will last a lifetime."
-  wake_word: null
+  wake_word: "guppy"
 
 LlamaServer:
-  model_path: "./models/Meta-Llama-3-8B-Instruct-Q6_K.gguf"
-  llama_cpp_repo_path: "./submodules/llama.cpp"
+  model_path: null
+  llama_cpp_repo_path: null
   context_length: 8192
