@@ -26,10 +26,10 @@ python3.12 -m pip install -r requirements.txt > /dev/null
 echo "Installing Whisper and llama"
 git submodule update --init --recursive > /dev/null
 
-# Compiling Whisper
+# Compiling Whisper on Apple Silicon
 echo "Compiling Whisper"
 cd submodules/whisper.cpp
-make libwhisper.so -j > /dev/null
+make WHISPER_COREML=1 libwhisper.so -j > /dev/null
 cd ..
 cd ..
 
