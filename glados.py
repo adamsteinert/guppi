@@ -561,15 +561,15 @@ class Glados:
         line = line.decode("utf-8")
         line = line.removeprefix("data: ")
         line = json.loads(line)
+        #print(f"Loaded Raw bytes!! {type(line)} !!  {line}   @@@@@")
         return line
 
 
 def start() -> None:
     """Set up the LLM server and start GlaDOS."""
     llama_server_config = LlamaServerConfig.from_yaml("glados_config.yml")
-
     llama_server = None
-    if llama_server_config is not None:
+    if llama_server_config.model_path is not None:
         llama_server = LlamaServer.from_config(llama_server_config)
         llama_server.start()
 
