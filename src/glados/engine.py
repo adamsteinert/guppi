@@ -18,7 +18,10 @@ import requests
 import sounddevice as sd  # type: ignore
 from sounddevice import CallbackFlags
 import yaml
+from sympy.strategies.core import switch
 
+from .Extensions.Commands.commandtype import CommandType
+from .Extensions.command_manager import command_manager
 from .ASR import VAD, AudioTranscriber
 from .TTS import tts_glados, tts_kokoro
 from .utils import spoken_text_converter as stc
@@ -26,6 +29,11 @@ from .utils import spoken_text_converter as stc
 logger.remove(0)
 logger.add(sys.stderr, level="SUCCESS")
 
+
+class LlmContext():
+    def __init__(self, text: str, system: str) -> None:
+        self.text = text
+        self.system = system
 
 class PersonalityPrompt(BaseModel):
     system: str | None = None
@@ -110,7 +118,7 @@ class Glados:
     VAD_THRESHOLD: float = 0.8  # Threshold for VAD detection
     BUFFER_SIZE: int = 800  # Milliseconds of buffer BEFORE VAD detection
     PAUSE_LIMIT: int = 640  # Milliseconds of pause allowed before processing
-    SIMILARITY_THRESHOLD: int = 2  # Threshold for wake word similarity
+    SIMILARITY_THRESHOLD: int = 3  # Threshold for wake word similarity
 
     NEUROTOXIN_RELEASE_ALLOWED: bool = False  # preparation for function calling, see issue #13
     DEFAULT_PERSONALITY_PREPROMPT: tuple[dict[str, str], ...] = (
@@ -162,6 +170,10 @@ class Glados:
         self._tts = tts_model
         self._asr_model = asr_model
         self._stc = stc.SpokenTextConverter()
+        self.commandManager = command_manager()
+
+        # inject command handlers
+        self.commandManager.load_commands()
 
         # warm up onnx ASR model
         self._asr_model.transcribe_file("data/0.wav")
@@ -181,7 +193,7 @@ class Glados:
 
         self._messages: list[dict[str, str]] = list(personality_preprompt)
 
-        self.llm_queue: queue.Queue[str] = queue.Queue()
+        self.llm_queue: queue.Queue[LlmContext] = queue.Queue()
         self.tts_queue: queue.Queue[str] = queue.Queue()
         self.audio_queue: queue.Queue[AudioMessage] = queue.Queue()
 
@@ -202,7 +214,7 @@ class Glados:
 
         if announcement:
             audio = self._tts.generate_speech_audio(announcement)
-            logger.success(f"TTS text: {announcement}")
+            logger.success(f"ATTS text: {announcement}")
             sd.play(audio, self._tts.sample_rate)
             if not self.interruptible:
                 sd.wait()
@@ -492,16 +504,30 @@ class Glados:
         detected_text = self.asr(self._samples)
 
         if detected_text:
-            logger.success(f"ASR text: '{detected_text}'")
+            logger.success(f"C ASR text: '{detected_text}'")
 
             if self.wake_word and not self._wakeword_detected(detected_text):
                 logger.info(f"Required wake word {self.wake_word=} not detected.")
             else:
-                self.llm_queue.put(detected_text)
+                self.handle_command(detected_text)
+
+        self.reset()
+
+    def handle_command(self, detected_text: str, context: str = ""):
+        response = self.commandManager.process_commands(detected_text, "")
+
+        match response.commandType:
+            case CommandType.PASS_TO_LLM:
+                logger.success("Passing to LLM")
+                self.llm_queue.put(LlmContext(detected_text, response.context))
                 self.processing = True
                 self.currently_speaking.set()
 
-        self.reset()
+            case CommandType.EXPLICIT_RESPONSE:
+                audio = self._tts.generate_speech_audio(response.text)
+                sd.play(audio, self._tts.sample_rate)
+                if not self.interruptible:
+                    sd.wait()
 
     def asr(self, samples: list[NDArray[np.float32]]) -> str:
         """
@@ -626,7 +652,12 @@ class Glados:
         """
         while not self.shutdown_event.is_set():
             try:
-                detected_text = self.llm_queue.get(timeout=0.1)
+                detected_text, system_prompt = self.llm_queue.get(timeout=0.1)
+                logger.success(f"LLM text: {detected_text} and {system_prompt}")
+
+                if system_prompt:
+                    self.messages.append({"role": "system", "content": system_prompt})
+
                 self.messages.append({"role": "user", "content": detected_text})
 
                 data = {
@@ -849,7 +880,7 @@ class Glados:
                     sd.play(audio_msg.audio, self._tts.sample_rate)
                     total_samples = len(audio_msg.audio)
 
-                    logger.success(f"TTS text: {audio_msg.text}")
+                    logger.success(f"B TTS text: {audio_msg.text}")
 
                     interrupted, percentage_played = self.percentage_played(total_samples)
 

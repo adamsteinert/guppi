@@ -13,7 +13,7 @@ from collections.abc import Generator
 
 import pytest
 
-from glados.utils.spoken_text_converter import SpokenTextConverter
+from src.glados.utils.spoken_text_converter import SpokenTextConverter
 
 
 @pytest.fixture
