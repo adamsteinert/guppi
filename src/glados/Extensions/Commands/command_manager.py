@@ -1,5 +1,5 @@
-from glados.Extensions.Commands.NullCommand import NullCommand
-from glados.Extensions.Commands.StoreMemoryCommand import StoreMemoryCommand
+from .NullCommand import NullCommand
+from .StoreMemoryCommand import StoreMemoryCommand
 
 
 class command_manager:

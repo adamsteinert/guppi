@@ -18,10 +18,11 @@ import requests
 import sounddevice as sd  # type: ignore
 from sounddevice import CallbackFlags
 import yaml
+from sympy.polys.polyconfig import query
 from sympy.strategies.core import switch
 
 from .Extensions.Commands.commandtype import CommandType
-from .Extensions.command_manager import command_manager
+from .Extensions.Commands.command_manager import command_manager
 from .ASR import VAD, AudioTranscriber
 from .TTS import tts_glados, tts_kokoro
 from .utils import spoken_text_converter as stc
@@ -112,12 +113,14 @@ class AudioMessage:
 
 
 class Glados:
-    PAUSE_TIME: float = 0.05  # Time to wait between processing loops
+    # AJS: Increase from .05 to allow longer pauses between statements because that's how I talk.
+    PAUSE_TIME: float = 0.10  # Time to wait between processing loops
     SAMPLE_RATE: int = 16000  # Sample rate for input stream
     VAD_SIZE: int = 32  # Milliseconds of sample for Voice Activity Detection (VAD)
     VAD_THRESHOLD: float = 0.8  # Threshold for VAD detection
     BUFFER_SIZE: int = 800  # Milliseconds of buffer BEFORE VAD detection
-    PAUSE_LIMIT: int = 640  # Milliseconds of pause allowed before processing
+    # AJS: Increase from 640 to allow longer pauses between statements because that's how I talk.
+    PAUSE_LIMIT: int = 1000  # Milliseconds of pause allowed before processing
     SIMILARITY_THRESHOLD: int = 3  # Threshold for wake word similarity
 
     NEUROTOXIN_RELEASE_ALLOWED: bool = False  # preparation for function calling, see issue #13
@@ -652,13 +655,13 @@ class Glados:
         """
         while not self.shutdown_event.is_set():
             try:
-                detected_text, system_prompt = self.llm_queue.get(timeout=0.1)
-                logger.success(f"LLM text: {detected_text} and {system_prompt}")
+                queryContext = self.llm_queue.get(timeout=0.1)
+                logger.success(f"LLM text: {queryContext.text} and {queryContext.system}")
 
-                if system_prompt:
-                    self.messages.append({"role": "system", "content": system_prompt})
+                if queryContext.system:
+                    self.messages.append({"role": "system", "content": queryContext.system})
 
-                self.messages.append({"role": "user", "content": detected_text})
+                self.messages.append({"role": "user", "content": queryContext.text})
 
                 data = {
                     "model": self.model,
