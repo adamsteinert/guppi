@@ -21,8 +21,8 @@ import yaml
 from sympy.polys.polyconfig import query
 from sympy.strategies.core import switch
 
-from .Extensions.Commands.commandtype import CommandType
-from .Extensions.Commands.command_manager import command_manager
+from .Extensions.Commands.command_type import CommandType
+from .Extensions.Commands.command_manager import CommandManager
 from .ASR import VAD, AudioTranscriber
 from .TTS import tts_glados, tts_kokoro
 from .utils import spoken_text_converter as stc
@@ -173,7 +173,7 @@ class Glados:
         self._tts = tts_model
         self._asr_model = asr_model
         self._stc = stc.SpokenTextConverter()
-        self.commandManager = command_manager()
+        self.commandManager = CommandManager()
 
         # inject command handlers
         self.commandManager.load_commands()

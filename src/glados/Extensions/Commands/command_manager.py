@@ -1,8 +1,8 @@
-from .NullCommand import NullCommand
-from .StoreMemoryCommand import StoreMemoryCommand
+from .null_command import NullCommand
+from .store_memory_command import StoreMemoryCommand
 
 
-class command_manager:
+class CommandManager:
 
     def __init__(self):
         self.commands = []

@@ -2,23 +2,10 @@ import os, time
 import pytest
 from loguru import logger
 
-from src.glados.Extensions.Commands.StoreMemoryCommand import StoreMemoryCommand
-from src.glados.Extensions.Commands.commandtype import CommandType
-from src.glados.Extensions.Commands.command_manager import command_manager
-from src.glados.Extensions.Commands.NullCommand import NullCommand
+from src.glados.Extensions.Commands.store_memory_command import StoreMemoryCommand
+from src.glados.Extensions.Commands.command_type import CommandType
+from src.glados.Extensions.Commands.null_command import NullCommand
 
-
-#    def test_CommandManager_ExecuteStoreMemory(self):
-#        dir = "/Users/adams/Documents/Yahara-Sync/_CoreKB/Memento"
-#        cm = command_manager()
-#        cm.add_command(StoreMemoryCommand(dir))
-#        result = cm.process_commands("store this text")
-#        self.assertTrue(CommandType.EXPLICIT_RESPONSE, result.commandType)
-#        self.assertTrue("StoreMemoryCommand", result.commandName)
-
-#        result = cm.process_commands("do nothing")
-#        self.assertTrue(CommandType.PASS_TO_LLM, result.commandType)
-#        self.assertTrue("StoreMemoryCommand", result.commandName)
 
 @pytest.mark.parametrize("text, expected", [
     ("store this text", True),
@@ -26,17 +13,18 @@ from src.glados.Extensions.Commands.NullCommand import NullCommand
     ("do nothing", False),
     ("", False)
 ])
-def test_StoreMemory_handle(text, expected):
+def test_store_memory_handle(text, expected):
     store_memory_command = StoreMemoryCommand("/Users/adams/Documents/Yahara-Sync/_CoreKB/Memento")
     assert (store_memory_command.handle_command(text) == expected)
 
-def test_StoreMemory_get_response():
+
+def test_store_memory_get_response():
     store_memory_command = StoreMemoryCommand("/Users/adams/Documents/Yahara-Sync/_CoreKB/Memento")
     response = store_memory_command.get_response()
     assert response in store_memory_command.response
 
 
-def test_StoreMemory_execute():
+def test_store_memory_execute():
     dir = "/Users/adams/Documents/Yahara-Sync/_CoreKB/Memento"
     store_memory_command = StoreMemoryCommand(dir)
     result = store_memory_command.execute_command("TESTXZY store this text")
@@ -54,7 +42,7 @@ def test_StoreMemory_execute():
         os.remove(result.system)
 
 
-def test_NullCommand_execute():
+def test_null_command_execute():
     null_command = NullCommand()
     result = null_command.execute_command("do nothing")
 

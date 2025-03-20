@@ -3,8 +3,8 @@ import re
 import random
 from datetime import datetime
 from loguru import logger
-from .commandresponse import CommandResponse
-from .commandtype import CommandType
+from .command_response import CommandResponse
+from .command_type import CommandType
 
 
 class StoreMemoryCommand:

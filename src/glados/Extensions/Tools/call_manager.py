@@ -1,6 +1,6 @@
 import ollama
 
-from src.glados.Extensions.Tools.ToolCallResponse import ToolCallResponse
+from src.glados.Extensions.Tools.toolcall_response import ToolCallResponse
 from src.glados.Extensions.Tools.tools import *
 
 # Tool calling/python/ollama: https://www.cohorte.co/blog/using-ollama-with-python-step-by-step-guide
@@ -27,6 +27,7 @@ call is appropriate. The available tools are listed below:
 2. There is a tool for calculating the amount of salt to add to a solution to reach a salinity of 26 
 """
 
+
 def handle_tool_calls(response, available_functions):
     """Process tool calls from model response"""
     for tool in response.message.tool_calls or []:
@@ -47,7 +48,8 @@ def handle_tool_calls(response, available_functions):
     return ToolCallResponse("FNF", None, None, Exception("No tool calls found"))
 
 
-def processToolCallResponse(text: str, modelName: str = "llama3.2", context: str = ""):
+def process_tool_call_response(text: str, modelName: str = "llama3.2", context: str = ""):
+    ###Answer a user request with a tool call###
     response = ollama.chat(
         modelName,
         messages=[{'role': 'system', 'content': tool_system_prompt},
@@ -58,7 +60,7 @@ def processToolCallResponse(text: str, modelName: str = "llama3.2", context: str
     return handle_tool_calls(response, available_functions)
 
 
-def analyzeRequestForTools(text: str, modelName: str = "llama3.2"):
+def analyze_request_for_tools(text: str, modelName: str = "llama3.2"):
     """Determine if a tool call is appropriate based on the user request and tools present in the application"""
     response = ollama.chat(
         modelName,

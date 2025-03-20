@@ -1,7 +1,6 @@
 import pytest
 from ollama import ChatResponse
-
-import src.glados.Extensions.Tools.CallManager as CallManager
+import src.glados.Extensions.Tools.call_manager as CallManager
 
 
 @pytest.mark.parametrize("text, expected",
@@ -11,7 +10,8 @@ import src.glados.Extensions.Tools.CallManager as CallManager
                           ('What is the area of a rectangle with length twenty one and width twelve?', 252)
                           ])
 def test_basic_tool_call(text, expected):
-    assert CallManager.processToolCallResponse(text).result == expected
+    assert CallManager.process_tool_call_response(text).result == expected
+
 
 @pytest.mark.parametrize("text, expected",
                          [('What is the area of a rectangle with length 5 and width 3?', 15),
@@ -19,7 +19,7 @@ def test_basic_tool_call(text, expected):
                           ('What is the capitol of france', 'No tool calls found'),
                           ])
 def test_no_tools(text, expected):
-    r = CallManager.processToolCallResponse(text)
+    r = CallManager.process_tool_call_response(text)
     if r.result is not None:
         assert r.result == expected
     else:
@@ -34,7 +34,7 @@ def test_no_tools(text, expected):
                           ('My current salinity is 21, how much salt do I need to add', 423)
                           ])
 def test_tool_call_salinity(text, expected):
-    assert CallManager.processToolCallResponse(text).result == expected
+    assert CallManager.process_tool_call_response(text).result == expected
 
 
 @pytest.mark.parametrize("text, expected",
@@ -45,7 +45,7 @@ def test_tool_call_salinity(text, expected):
                           ('What was the last alkalinity reading?', False)
                           ])
 def test_is_tool_call_available(text: str, expected: bool):
-    assert bool(CallManager.analyzeRequestForTools(text)) == expected
+    assert bool(CallManager.analyze_request_for_tools(text)) == expected
 
 
 @pytest.mark.parametrize("current, expected",

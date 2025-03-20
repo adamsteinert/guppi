@@ -1,9 +1,9 @@
 from loguru import logger
 
-from .commandtype import CommandType
+from .command_type import CommandType
 
 
-class cmd_store:
+class CommandStore:
     START_WINDOW_INDEX = 20
 
     def handle_command(self, text: str, context: str = ""):
