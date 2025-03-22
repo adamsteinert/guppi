@@ -60,6 +60,7 @@ class GladosConfig(BaseModel):
     model: str
     api_key: str | None = None
     interruptible: bool = True
+    silent: bool = False
     wake_word: str | None = None
     voice: str
     announcement: str | None = None
@@ -140,6 +141,7 @@ class Glados:
         model: str,
         api_key: str | None = None,
         interruptible: bool = True,
+        silent: bool = False,
         wake_word: str | None = None,
         personality_preprompt: tuple[dict[str, str], ...] = DEFAULT_PERSONALITY_PREPROMPT,
         announcement: str | None = None,
@@ -202,6 +204,7 @@ class Glados:
 
         self.processing = False
         self.interruptible = interruptible
+        self.silent = silent
 
         self.currently_speaking = threading.Event()
         self.shutdown_event = threading.Event()
@@ -216,9 +219,7 @@ class Glados:
         audio_thread.start()
 
         if announcement:
-            audio = self._tts.generate_speech_audio(announcement)
-            logger.success(f"ATTS text: {announcement}")
-            sd.play(audio, self._tts.sample_rate)
+            self._play_or_log_audio(announcement)
             if not self.interruptible:
                 sd.wait()
 
@@ -300,6 +301,7 @@ class Glados:
             model=config.model,
             api_key=config.api_key,
             interruptible=config.interruptible,
+            silent=config.silent,
             wake_word=config.wake_word,
             announcement=config.announcement,
             personality_preprompt=tuple(config.to_chat_messages()),
@@ -517,6 +519,11 @@ class Glados:
         self.reset()
 
     def handle_command(self, detected_text: str, context: str = ""):
+        """This method uses the Commands subsystem to detect certain text patterns and
+        direct GUPPY to handle them in a specific way.
+
+        This may be direct handling, or passing to the LLM for further processing.
+        """
         response = self.commandManager.process_commands(detected_text, "")
 
         match response.commandType:
@@ -527,10 +534,10 @@ class Glados:
                 self.currently_speaking.set()
 
             case CommandType.EXPLICIT_RESPONSE:
-                audio = self._tts.generate_speech_audio(response.text)
-                sd.play(audio, self._tts.sample_rate)
+                self._play_or_log_audio(response.text)
                 if not self.interruptible:
                     sd.wait()
+
 
     def asr(self, samples: list[NDArray[np.float32]]) -> str:
         """
@@ -624,6 +631,17 @@ class Glados:
         percentage_played = min(int(progress / total_samples * 100), 100)
         return interrupted, percentage_played
 
+    def preprocess_llm_commands(self, queryContext: LlmContext):
+        logger.success(f"LLM TXT|: {queryContext.text}")
+        logger.success(f"LLM SYS|: {queryContext.system}")
+
+        if queryContext.system:
+            self.messages.append({"role": "system", "content": queryContext.system})
+
+        self.messages.append({"role": "user", "content": queryContext.text})
+
+        logger.success(f"LLM MSG|: {self.messages}")
+
     def process_llm(self) -> None:
         """
         Process text through the Language Model (LLM) and generate conversational responses.
@@ -656,12 +674,7 @@ class Glados:
         while not self.shutdown_event.is_set():
             try:
                 queryContext = self.llm_queue.get(timeout=0.1)
-                logger.success(f"LLM text: {queryContext.text} and {queryContext.system}")
-
-                if queryContext.system:
-                    self.messages.append({"role": "system", "content": queryContext.system})
-
-                self.messages.append({"role": "user", "content": queryContext.text})
+                self.preprocess_llm_commands(queryContext)
 
                 data = {
                     "model": self.model,
@@ -880,10 +893,8 @@ class Glados:
                     continue
 
                 if len(audio_msg.audio):
-                    sd.play(audio_msg.audio, self._tts.sample_rate)
+                    self._play_or_log_audio(audio_msg)
                     total_samples = len(audio_msg.audio)
-
-                    logger.success(f"B TTS text: {audio_msg.text}")
 
                     interrupted, percentage_played = self.percentage_played(total_samples)
 
@@ -909,6 +920,23 @@ class Glados:
 
             except queue.Empty:
                 pass
+
+    def _play_or_log_audio_message(self, message: AudioMessage) -> None:
+        """Play audio or log the message if the assistant is currently speaking."""
+        if self.silent:
+            logger.success(f"SN: {message.text}")
+        else:
+            sd.play(message.audio, self._tts.sample_rate)
+
+    def _play_or_log_audio(self, text_to_play: str) -> None:
+        """Play audio or log the message if the assistant is currently speaking."""
+        if self.silent:
+            logger.success(f"SN: {text_to_play}")
+        else:
+            audio = self._tts.generate_speech_audio(text_to_play)
+            logger.success(f"ATTS text: {text_to_play}")
+            sd.play(audio, self._tts.sample_rate)
+
 
     def clip_interrupted_sentence(self, generated_text: str, percentage_played: float) -> str:
         """
