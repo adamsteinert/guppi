@@ -27,3 +27,7 @@ def calculate_area(length: float, width: float) -> float:
         float: The area of the rectangle
     """
     return length * width
+
+def get_everything_else():
+    """This tool call represents an unknown request and always returns None"""
+    return None

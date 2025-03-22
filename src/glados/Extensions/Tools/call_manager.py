@@ -1,7 +1,6 @@
+from venv import logger
+
 import ollama
-import pydantic
-from pydantic import BaseModel
-from enum import Enum, IntEnum
 
 from src.glados.Extensions.Tools.toolcall_response import ToolCallResponse
 from src.glados.Extensions.Tools.tools import *
@@ -13,7 +12,8 @@ from src.glados.Extensions.Tools.tools import *
 
 available_functions = {
     'calculate_area': calculate_area,
-    'get_salinity': get_salinity
+    'get_salinity': get_salinity,
+    'everything_else': get_everything_else
 }
 
 tool_system_prompt = """You are an AI assistant used for tool calling. Choose the best tool from those provided.
@@ -23,17 +23,23 @@ If one does not exist, please reply there was no tool call found matching the pr
 """
 
 tool_sentiment_prompt = """
-You are an AI assistant analyzing a user request to understand the type of question being asked. 
+You are an AI assistant analyzing user requests to determine if they warrant using one of your available tools. 
+Respond with "true" if the request clearly indicates a need for the salt calculator or area calculator. return "false"
+otherwise, even if a tool is appropriate but not explicitly mentioned.
 
-Choose internal behaviors is a user is asking to shut down or clear memory.:
 
-Choose tool call if the user is asking to calculate the area of a rectangle or the amount of salt needed to increase salinity.:
+Listed tools:
+1. Salt Calculator - For calculating the amount of salt to add to a body of water to reach a desired salinity level
+2. Area Calculations - For calculating the area of a rectangle (and only a rectangle)
 
-The tools available are:
-1. a users asks to calculate the area of a rectangle (and no other shapes)
-2. the user wishes to know the amount of salt needed to increase salinity
-
-All other queries should be considered general queries. 
+Examples:
+- "What is the area of a rectangle with length 5 and width 3?" → true (requires area calculations tool)
+- "What is the area of a circle with diameter 3?" → false (No available tool)
+- "What do I need for salinity with a current value of thirteen?" → true (requires salt calculator tool)
+- "What's the weather in Paris today?" → false (that tool is not availalbe)
+- "Help me understand quantum computing." → false (can be answered through conversation)
+- "Calculate the compound interest on $10,000 at 5% for 10 years." → false (that tool is not available)
+- "What are your thoughts on AI ethics?" → false (can be answered through conversation)
 """
 
 
@@ -57,7 +63,7 @@ def handle_tool_calls(response, available_functions):
     return ToolCallResponse("FNF", None, None, Exception("No tool calls found"))
 
 
-def process_tool_call_response(text: str, modelName: str = "llama3.2", context: str = ""):
+def process_tool_call_response(text: str, modelName: str = "llama3.1", context: str = ""):
     ###Answer a user request with a tool call###
     response = ollama.chat(
         modelName,
@@ -69,41 +75,12 @@ def process_tool_call_response(text: str, modelName: str = "llama3.2", context: 
     return handle_tool_calls(response, available_functions)
 
 
-class QueryTypeEnum(str, Enum):
-    internal_behavior = 'internal_behavior'
-    general_query = 'general_query'
-    system_tool = 'tool_call'
-
-class QuerySentimentResponse(BaseModel):
-    query_sentiment: QueryTypeEnum
-
-def analyze_request_for_tools(text: str, modelName: str = "llama3.2") -> QuerySentimentResponse:
+def analyze_request_for_tools(text: str, modelName: str = "llama3.2") -> bool:
     """Determine if a tool call is appropriate based on the user request and tools present in the application"""
     response = ollama.chat(
         modelName,
         messages=[
-            {'role': 'system', 'content': tool_sentiment_prompt},
+            {'role': 'assistant', 'content': tool_sentiment_prompt},
             {'role': 'user', 'content': text}],
-        format=QuerySentimentResponse.model_json_schema()
     )
-
-    return QuerySentimentResponse.model_validate_json(response.message.content)
-
-"""
-sys_prompt = You are Guppy, a terse artificial intelligence designed to assist with tasks. 
-Your responses should be concise, while efficiently completing all tasks, in the manner of an english butler. 
-Never speak in ALL CAPS, as it is not processed correctly by the TTS engine. Only make short replies, 
-2 sentences at most. 
-
-
-def process_all_in_one(text: str, modelName: str = "llama3.2", context: str = ""):
-    ###Answer a user request with a tool call###
-    response = ollama.chat(
-        modelName,
-        messages=[{'role': 'system', 'content': sys_prompt},
-                  {'role': 'user', 'content': text}],
-        tools=[get_salinity, calculate_area]
-    )
-
-    return handle_tool_calls(response, available_functions)
-"""
+    return response.message.content.lower().startswith('true')

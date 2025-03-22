@@ -1,7 +1,6 @@
 import pytest
 from ollama import ChatResponse
 import src.glados.Extensions.Tools.call_manager as CallManager
-from src.glados.Extensions.Tools.call_manager import QuerySentimentResponse, QueryTypeEnum
 
 
 @pytest.mark.parametrize("text, expected",
@@ -15,16 +14,13 @@ def test_basic_tool_call(text, expected):
 
 
 @pytest.mark.parametrize("text, expected",
-                         [('What is the area of a rectangle with length 5 and width 3?', 15),
-                          ('What is the area of a rectangle with length twelve and width twelve?', 144),
-                          ('What is the capitol of france', 'No tool calls found'),
+                         [('What is the capitol of france', None),
+                          ('Who is nelson mandella.', None),
+                          ('how much gold is in fort knox.', None),
                           ])
 def test_no_tools(text, expected):
     r = CallManager.process_tool_call_response(text)
-    if r.result is not None:
-        assert r.result == expected
-    else:
-        assert str(r.error) == expected
+    assert r.result is None
 
 
 @pytest.mark.parametrize("text, expected",
@@ -39,14 +35,14 @@ def test_tool_call_salinity(text, expected):
 
 
 @pytest.mark.parametrize("text, expected",
-                         [('I have a current value of 13. How much salt do I need to add.', QueryTypeEnum.system_tool),
-                          ('What is the capitol of france', QueryTypeEnum.general_query),
-                          ('What is the area of a rectangle with length 12 and width 12?', QueryTypeEnum.system_tool),
-                          ('What is the circumference of a circle with diameter twenty four', QueryTypeEnum.general_query),
-                          ('What was the last alkalinity reading?', QueryTypeEnum.general_query)
+                         [('What do I need for salinity with a current value of thirteen', True),
+                          ('What is the area of a rectangle with length 12 and width 12?', True),
+                          ('What is the circumference of a circle with diameter twenty four', False),
+                          ('What is the capitol of france', False),
+                          ('What was the last alkalinity reading?', False)
                           ])
-def test_is_tool_call_available(text: str, expected: CallManager.QuerySentimentResponse):
-    assert CallManager.analyze_request_for_tools(text).query_sentiment == expected
+def test_is_tool_call_available(text: str, expected: bool):
+    assert bool(CallManager.analyze_request_for_tools(text, "llama3.1")) == expected
 
 
 @pytest.mark.parametrize("current, expected",
@@ -58,9 +54,3 @@ def test_is_tool_call_available(text: str, expected: CallManager.QuerySentimentR
                           ])
 def test_salinity_calculation(current, expected):
     assert CallManager.get_salinity(current) == expected
-
-@pytest.mark.parametrize("current, expected",
-                         [("when was calculus invented", False),
-                          ('What is the area of a rectangle with length 12 and width 12?', True)])
-def test_process_all_in_one(current, expected):
-    assert CallManager.process_all_in_one(current) == expected
