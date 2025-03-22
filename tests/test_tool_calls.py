@@ -1,6 +1,7 @@
 import pytest
 from ollama import ChatResponse
 import src.glados.Extensions.Tools.call_manager as CallManager
+from src.glados.Extensions.Tools.call_manager import QuerySentimentResponse, QueryTypeEnum
 
 
 @pytest.mark.parametrize("text, expected",
@@ -38,14 +39,14 @@ def test_tool_call_salinity(text, expected):
 
 
 @pytest.mark.parametrize("text, expected",
-                         [('What do I need for salinity with a current value of thirteen', True),
-                          ('What is the capitol of france', False),
-                          ('What is the area of a rectangle with length 12 and width 12?', True),
-                          ('What is the circumference of a circle with diameter twenty four', False),
-                          ('What was the last alkalinity reading?', False)
+                         [('I have a current value of 13. How much salt do I need to add.', QueryTypeEnum.system_tool),
+                          ('What is the capitol of france', QueryTypeEnum.general_query),
+                          ('What is the area of a rectangle with length 12 and width 12?', QueryTypeEnum.system_tool),
+                          ('What is the circumference of a circle with diameter twenty four', QueryTypeEnum.general_query),
+                          ('What was the last alkalinity reading?', QueryTypeEnum.general_query)
                           ])
-def test_is_tool_call_available(text: str, expected: bool):
-    assert bool(CallManager.analyze_request_for_tools(text)) == expected
+def test_is_tool_call_available(text: str, expected: CallManager.QuerySentimentResponse):
+    assert CallManager.analyze_request_for_tools(text).query_sentiment == expected
 
 
 @pytest.mark.parametrize("current, expected",
@@ -57,3 +58,9 @@ def test_is_tool_call_available(text: str, expected: bool):
                           ])
 def test_salinity_calculation(current, expected):
     assert CallManager.get_salinity(current) == expected
+
+@pytest.mark.parametrize("current, expected",
+                         [("when was calculus invented", False),
+                          ('What is the area of a rectangle with length 12 and width 12?', True)])
+def test_process_all_in_one(current, expected):
+    assert CallManager.process_all_in_one(current) == expected
