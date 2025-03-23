@@ -1,9 +1,12 @@
 from venv import logger
-
 import ollama
 
-from src.glados.Extensions.Tools.toolcall_response import ToolCallResponse
-from src.glados.Extensions.Tools.tools import *
+import pydantic
+from pydantic import BaseModel
+from enum import Enum, IntEnum
+
+from .toolcall_response import ToolCallResponse
+from .tools import *
 
 # Tool calling/python/ollama: https://www.cohorte.co/blog/using-ollama-with-python-step-by-step-guide
 # https://toolworks.dev/docs/Guides/Advanced/call-functions-ollama-python.md
@@ -75,7 +78,7 @@ def process_tool_call_response(text: str, modelName: str = "llama3.1", context: 
     return handle_tool_calls(response, available_functions)
 
 
-def analyze_request_for_tools(text: str, modelName: str = "llama3.2") -> bool:
+def analyze_request_for_tools(text: str, modelName: str = "llama3.1") -> bool:
     """Determine if a tool call is appropriate based on the user request and tools present in the application"""
     response = ollama.chat(
         modelName,
@@ -84,3 +87,60 @@ def analyze_request_for_tools(text: str, modelName: str = "llama3.2") -> bool:
             {'role': 'user', 'content': text}],
     )
     return response.message.content.lower().startswith('true')
+
+
+
+
+
+
+
+
+
+ts2_prompt = """
+You are an AI assistant analyzing user requests to categorize them into types. The categories are 
+internal behavior, general query, and tool call.
+Respond with "tool_call" if the request clearly indicates a need for the salt calculator or area calculator. 
+Respond with "internal_behavior" if the request clearly asks to shut down or clear memory"
+For anything else, respond "general_query"
+
+tool calls:
+1. Salt Calculator - For calculating the amount of salt to add to a body of water to reach a desired salinity level
+2. Area Calculations - For calculating the area of a rectangle (and only a rectangle)
+
+internal behaviors:
+1. Shut Down - For shutting down the system
+2. Clear Memory - For clearing the system's memory
+
+Examples:
+- "What is the area of a rectangle with length 5 and width 3?" → tool_call (requires area calculations tool)
+- "What is the area of a circle with diameter 3?" → general_query (No available tool)
+- "What do I need for salinity with a current value of thirteen?" → tool_call (requires salt calculator tool)
+- "please shut down" → internal_behavior
+- "What's the weather in Paris today?" → general_query (that tool is not availalbe)
+- "Help me understand quantum computing." → general_query (can be answered through conversation)
+- "Calculate the compound interest on $10,000 at 5% for 10 years." → general_query (that tool is not available)
+- "What are your thoughts on AI ethics?" → general_query (can be answered through conversation)
+"""
+
+
+
+class QueryTypeEnum(str, Enum):
+    internal_behavior = 'internal_behavior'
+    general_query = 'general_query'
+    system_tool = 'tool_call'
+
+class QuerySentimentResponse(BaseModel):
+    query_sentiment: QueryTypeEnum
+
+
+def categorize_request(text: str, modelName: str = "llama3.1") -> QuerySentimentResponse:
+    """Determine if a tool call is appropriate based on the user request and tools present in the application"""
+    response = ollama.chat(
+        modelName,
+        messages=[
+            {'role': 'assistant', 'content': ts2_prompt},
+            {'role': 'user', 'content': text}],
+        format=QuerySentimentResponse.model_json_schema()
+    )
+
+    return QuerySentimentResponse.model_validate_json(response.message.content)

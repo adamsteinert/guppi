@@ -18,14 +18,13 @@ import requests
 import sounddevice as sd  # type: ignore
 from sounddevice import CallbackFlags
 import yaml
-from sympy.polys.polyconfig import query
-from sympy.strategies.core import switch
 
 from .Extensions.Commands.command_type import CommandType
+from .Extensions.Tools.call_manager import analyze_request_for_tools, process_tool_call_response
 from .Extensions.Commands.command_manager import CommandManager
 from .ASR import VAD, AudioTranscriber
 from .TTS import tts_glados, tts_kokoro
-from .utils import spoken_text_converter as stc
+from .utils import spoken_text_converter as stc, SpokenTextConverter
 
 logger.remove(0)
 logger.add(sys.stderr, level="SUCCESS")
@@ -219,7 +218,7 @@ class Glados:
         audio_thread.start()
 
         if announcement:
-            self._play_or_log_audio(announcement)
+            self._speak_or_log_text(announcement)
             if not self.interruptible:
                 sd.wait()
 
@@ -455,6 +454,8 @@ class Glados:
         """
         assert self.wake_word is not None, "Wake word should not be None"
 
+        # replace any of teh following words in text with Guppy: Guffy, Goppy, Gopy, Copy
+        text = re.sub(r"Guffy|Goppy|Gopy|Copy|Guby|Gffy|Gumy|Cuopy", self.wake_word, text)
         words = text.split()
         closest_distance = min([distance(word.lower(), self.wake_word) for word in words])
         return bool(closest_distance < self.SIMILARITY_THRESHOLD)
@@ -534,7 +535,7 @@ class Glados:
                 self.currently_speaking.set()
 
             case CommandType.EXPLICIT_RESPONSE:
-                self._play_or_log_audio(response.text)
+                self._speak_or_log_text(response.text)
                 if not self.interruptible:
                     sd.wait()
 
@@ -631,16 +632,41 @@ class Glados:
         percentage_played = min(int(progress / total_samples * 100), 100)
         return interrupted, percentage_played
 
-    def preprocess_llm_commands(self, queryContext: LlmContext):
+    def preprocess_llm_commands(self, queryContext: LlmContext) -> bool:
+        """Categorize incoming commands. Call tools if needed or manipulate the LlmContext
+        return True if the query is handled.
+        """
         logger.success(f"LLM TXT|: {queryContext.text}")
         logger.success(f"LLM SYS|: {queryContext.system}")
 
+        # Toolcalling
+        handle_as_toolcall = analyze_request_for_tools(queryContext.text)
+        if handle_as_toolcall:
+            try:
+                response = process_tool_call_response(queryContext.text)
+                if response.result:
+                    logger.success(f"Tool call response: {response}")
+                    queryContext.text = SpokenTextConverter().text_to_spoken(
+                        f"The result, as calculated by {response.function_name }, is {response.result}.")
+                    #self._speak_or_log_text(queryContext.text)
+                    self.tts_queue.put(queryContext.text)
+                    self.tts_queue.put("<EOS>")
+                    return True
+            except Exception as e:
+                logger.error(f"Error processing tool call: {e}")
+                return False
+
+
+        # TODO: Internal state commands
+
+        # Update context and continue
         if queryContext.system:
             self.messages.append({"role": "system", "content": queryContext.system})
 
         self.messages.append({"role": "user", "content": queryContext.text})
 
         logger.success(f"LLM MSG|: {self.messages}")
+        return False
 
     def process_llm(self) -> None:
         """
@@ -674,62 +700,65 @@ class Glados:
         while not self.shutdown_event.is_set():
             try:
                 queryContext = self.llm_queue.get(timeout=0.1)
-                self.preprocess_llm_commands(queryContext)
 
-                data = {
-                    "model": self.model,
-                    "stream": True,
-                    "messages": self.messages,
-                }
-                logger.debug(f"starting request on {self.messages=}")
-                logger.debug("Performing request to LLM server...")
+                # Preprocess the command. when True, command is handled. Don't pass on to the LLM again.
+                if not self.preprocess_llm_commands(queryContext):
+                    self.call_llm()
 
-                # Perform the request and process the stream
-
-                with requests.post(
-                    self.completion_url,
-                    headers=self.prompt_headers,
-                    json=data,
-                    stream=True,
-                ) as response:
-                    sentence = []
-                    for line in response.iter_lines():
-                        if self.processing is False:
-                            break  # If the stop flag is set from new voice input, halt processing
-                        if line:  # Filter out empty keep-alive new lines
-                            try:
-                                cleaned_line = self._clean_raw_bytes(line)
-                                if cleaned_line:  # Add check for empty cleaned line
-                                    chunk = self._process_chunk(cleaned_line)
-                                    if chunk:
-                                        sentence.append(chunk)
-                                        # If there is a pause token, send the sentence to the TTS queue
-                                        if (
-                                            chunk
-                                            in [
-                                                ".",
-                                                "!",
-                                                "?",
-                                                ":",
-                                                ";",
-                                                "?!",
-                                                "\n",
-                                                "\n\n",
-                                            ]
-                                            and sentence[-2].isdigit() is False
-                                        ):  # Don't split on numbers!
-                                            logger.info(f"Chunk: {chunk}")
-                                            self._process_sentence(sentence)
-                                            sentence = []
-                            except Exception as e:
-                                logger.error(f"Error processing line: {e}")
-                                continue
-
-                    if self.processing and sentence:
-                        self._process_sentence(sentence)
-                    self.tts_queue.put("<EOS>")  # Add end of stream token to the queue
             except queue.Empty:
                 time.sleep(self.PAUSE_TIME)
+
+    def call_llm(self):
+        data = {
+            "model": self.model,
+            "stream": True,
+            "messages": self.messages,
+        }
+        logger.debug(f"starting request on {self.messages=}")
+        logger.debug("Performing request to LLM server...")
+        # Perform the request and process the stream
+        with requests.post(
+                self.completion_url,
+                headers=self.prompt_headers,
+                json=data,
+                stream=True,
+        ) as response:
+            sentence = []
+            for line in response.iter_lines():
+                if self.processing is False:
+                    break  # If the stop flag is set from new voice input, halt processing
+                if line:  # Filter out empty keep-alive new lines
+                    try:
+                        cleaned_line = self._clean_raw_bytes(line)
+                        if cleaned_line:  # Add check for empty cleaned line
+                            chunk = self._process_chunk(cleaned_line)
+                            if chunk:
+                                sentence.append(chunk)
+                                # If there is a pause token, send the sentence to the TTS queue
+                                if (
+                                        chunk
+                                        in [
+                                    ".",
+                                    "!",
+                                    "?",
+                                    ":",
+                                    ";",
+                                    "?!",
+                                    "\n",
+                                    "\n\n",
+                                ]
+                                        and sentence[-2].isdigit() is False
+                                ):  # Don't split on numbers!
+                                    logger.info(f"Chunk: {chunk}")
+                                    self._process_sentence(sentence)
+                                    sentence = []
+                    except Exception as e:
+                        logger.error(f"Error processing line: {e}")
+                        continue
+
+            if self.processing and sentence:
+                self._process_sentence(sentence)
+            self.tts_queue.put("<EOS>")  # Add end of stream token to the queue
 
     def _process_sentence(self, current_sentence: list[str]) -> None:
         """
@@ -893,7 +922,7 @@ class Glados:
                     continue
 
                 if len(audio_msg.audio):
-                    self._play_or_log_audio(audio_msg)
+                    self._speak_or_log_audio_message(audio_msg)
                     total_samples = len(audio_msg.audio)
 
                     interrupted, percentage_played = self.percentage_played(total_samples)
@@ -921,14 +950,16 @@ class Glados:
             except queue.Empty:
                 pass
 
-    def _play_or_log_audio_message(self, message: AudioMessage) -> None:
+
+    def _speak_or_log_audio_message(self, message: AudioMessage) -> None:
         """Play audio or log the message if the assistant is currently speaking."""
         if self.silent:
             logger.success(f"SN: {message.text}")
         else:
             sd.play(message.audio, self._tts.sample_rate)
 
-    def _play_or_log_audio(self, text_to_play: str) -> None:
+
+    def _speak_or_log_text(self, text_to_play: str) -> None:
         """Play audio or log the message if the assistant is currently speaking."""
         if self.silent:
             logger.success(f"SN: {text_to_play}")

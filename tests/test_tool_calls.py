@@ -1,6 +1,7 @@
 import pytest
 from ollama import ChatResponse
 import src.glados.Extensions.Tools.call_manager as CallManager
+from src.glados.Extensions.Tools.call_manager import QuerySentimentResponse, QueryTypeEnum
 
 
 @pytest.mark.parametrize("text, expected",
@@ -54,3 +55,16 @@ def test_is_tool_call_available(text: str, expected: bool):
                           ])
 def test_salinity_calculation(current, expected):
     assert CallManager.get_salinity(current) == expected
+
+
+#@pytest.mark.parametrize("text, expected",
+#                         [('What do I need for salinity with a current value of thirteen', QueryTypeEnum.system_tool),
+#                          ('What is the capitol of france', QueryTypeEnum.general_query),
+#                          ('What is the area of a rectangle with length 12 and width 12?', QueryTypeEnum.system_tool),
+#                          ('What is the circumference of a circle with diameter twenty four', QueryTypeEnum.general_query),
+#                          ('What was the last alkalinity reading?', QueryTypeEnum.general_query),
+#                          ('shut down', QueryTypeEnum.internal_behavior)
+#                          ])
+#def test_is_tool_call_available(text: str, expected: CallManager.QueryTypeEnum):
+#    assert CallManager.categorize_request(text).query_sentiment == expected
+

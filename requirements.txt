@@ -76,3 +76,5 @@ uc-micro-py==1.0.3
     # via linkify-it-py
 urllib3==2.3.0
     # via requests
+ollama==0.4.7
+    # via glados (pyproject.toml)

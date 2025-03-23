@@ -1,6 +1,6 @@
 
 
-def get_salinity(current_value: float) -> float:
+def get_salinity(current_value: float) -> str:
     """
     Calculate the amount of salt to add to a solution to reach a salinity of 26.
     Given a current salinity, calculate the amount of salt to add to reach a salinity of 26.
@@ -12,7 +12,7 @@ def get_salinity(current_value: float) -> float:
         float: The amount of salt to add
     """
     current = float(current_value) / float(26.0)
-    return round(abs(2200 * (1 - current)))
+    return str(round(abs(2200 * (1 - current)))) + " grams"
 
 
 def calculate_area(length: float, width: float) -> float:
