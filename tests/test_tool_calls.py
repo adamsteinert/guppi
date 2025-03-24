@@ -34,13 +34,24 @@ def test_no_tools(text, expected):
 def test_tool_call_salinity(text, expected):
     assert CallManager.process_tool_call_response(text).result == expected
 
+@pytest.mark.parametrize("text, tname, sname",
+                         [('transcribe the most recent OBS recording. Call it notes with aspen', "notes with aspen", "None"),
+                          ('transcribe the OBS recording from the file called whip, name it intro meeting with flexion ', "intro meeting with flexion", "whip")
+                          ])
+def test_tool_call_obs(text, tname, sname):
+    tc = (CallManager.process_tool_call_response(text))
+    n = (str(tc.arguments['finalTranscriptName']).replace('_', ' '))
+    assert n == tname
+    assert str(tc.arguments['sourceFileName']) == sname
 
 @pytest.mark.parametrize("text, expected",
                          [('What do I need for salinity with a current value of thirteen', True),
                           ('What is the area of a rectangle with length 12 and width 12?', True),
                           ('What is the circumference of a circle with diameter twenty four', False),
                           ('What is the capitol of france', False),
-                          ('What was the last alkalinity reading?', False)
+                          ('What was the last alkalinity reading?', False),
+                          ('Transcribe the last OBS recording?', True),
+                          ('Transcribe the last OBS recording and call it meeting with aspen technology?', True)
                           ])
 def test_is_tool_call_available(text: str, expected: bool):
     assert bool(CallManager.analyze_request_for_tools(text, "llama3.1")) == expected

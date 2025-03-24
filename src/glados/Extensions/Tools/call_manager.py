@@ -1,10 +1,8 @@
 from venv import logger
 import ollama
-
 import pydantic
 from pydantic import BaseModel
 from enum import Enum, IntEnum
-
 from .toolcall_response import ToolCallResponse
 from .tools import *
 
@@ -16,7 +14,8 @@ from .tools import *
 available_functions = {
     'calculate_area': calculate_area,
     'get_salinity': get_salinity,
-    'everything_else': get_everything_else
+    'everything_else': get_everything_else,
+    'transcribe_notes_from_obs_meeting': transcribe_notes_from_obs_meeting
 }
 
 tool_system_prompt = """You are an AI assistant used for tool calling. Choose the best tool from those provided.
@@ -34,6 +33,8 @@ otherwise, even if a tool is appropriate but not explicitly mentioned.
 Listed tools:
 1. Salt Calculator - For calculating the amount of salt to add to a body of water to reach a desired salinity level
 2. Area Calculations - For calculating the area of a rectangle (and only a rectangle)
+3. OBS Transcription - For transcribing an audio recording in OBS given the name of the file to be created and optionally
+the original filename of the recording.
 
 Examples:
 - "What is the area of a rectangle with length 5 and width 3?" → true (requires area calculations tool)
@@ -43,6 +44,8 @@ Examples:
 - "Help me understand quantum computing." → false (can be answered through conversation)
 - "Calculate the compound interest on $10,000 at 5% for 10 years." → false (that tool is not available)
 - "What are your thoughts on AI ethics?" → false (can be answered through conversation)
+- "Transcribe the last OBS recording, call it meeting notes" -> true (requires OBS Transcription tool, no source fine identified, output file should be called 'meeting notes')
+- "Transcribe the OBS recording with the name meeting with jason banks -> true (requires OBS transcription, output file name is 'jason banks'
 """
 
 
@@ -68,11 +71,14 @@ def handle_tool_calls(response, available_functions):
 
 def process_tool_call_response(text: str, modelName: str = "llama3.1", context: str = ""):
     ###Answer a user request with a tool call###
+    fnlist = list(available_functions.values())
     response = ollama.chat(
         modelName,
         messages=[{'role': 'system', 'content': tool_system_prompt},
                   {'role': 'user', 'content': text}],
-        tools=[get_salinity, calculate_area]
+        # get an array of the values form available_functions
+
+        tools=fnlist
     )
 
     return handle_tool_calls(response, available_functions)

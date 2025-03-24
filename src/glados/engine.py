@@ -61,6 +61,7 @@ class GladosConfig(BaseModel):
     interruptible: bool = True
     silent: bool = False
     wake_word: str | None = None
+    wake_word_variants: str = ""
     voice: str
     announcement: str | None = None
     personality_preprompt: list[PersonalityPrompt]
@@ -142,6 +143,7 @@ class Glados:
         interruptible: bool = True,
         silent: bool = False,
         wake_word: str | None = None,
+        wake_word_variants: str = "",
         personality_preprompt: tuple[dict[str, str], ...] = DEFAULT_PERSONALITY_PREPROMPT,
         announcement: str | None = None,
     ) -> None:
@@ -170,6 +172,7 @@ class Glados:
         self.completion_url = completion_url
         self.model = model
         self.wake_word = wake_word
+        self.wake_word_variants = wake_word_variants
         self._vad_model = vad_model
         self._tts = tts_model
         self._asr_model = asr_model
@@ -302,6 +305,7 @@ class Glados:
             interruptible=config.interruptible,
             silent=config.silent,
             wake_word=config.wake_word,
+            wake_word_variants=config.wake_word_variants,
             announcement=config.announcement,
             personality_preprompt=tuple(config.to_chat_messages()),
         )
@@ -454,8 +458,8 @@ class Glados:
         """
         assert self.wake_word is not None, "Wake word should not be None"
 
-        # replace any of teh following words in text with Guppy: Guffy, Goppy, Gopy, Copy
-        text = re.sub(r"Guffy|Goppy|Gopy|Copy|Guby|Gffy|Gumy|Cuopy", self.wake_word, text)
+        # Text replace wake word variants when they are misunderstood or common misrepresentations
+        text = re.sub(self.wake_word_variants, self.wake_word, text)
         words = text.split()
         closest_distance = min([distance(word.lower(), self.wake_word) for word in words])
         return bool(closest_distance < self.SIMILARITY_THRESHOLD)
@@ -560,6 +564,7 @@ class Glados:
         audio = audio / np.max(np.abs(audio)) / 2
 
         detected_text = self._asr_model.transcribe(audio)
+        logger.success("XZY: " + detected_text)
         return detected_text
 
     def percentage_played(self, total_samples: int) -> tuple[bool, int]:
@@ -640,9 +645,11 @@ class Glados:
         logger.success(f"LLM SYS|: {queryContext.system}")
 
         # Toolcalling
+        #self.tts_queue.put("analyzing")
         handle_as_toolcall = analyze_request_for_tools(queryContext.text)
         if handle_as_toolcall:
             try:
+                #self.tts_queue.put("calculating")
                 response = process_tool_call_response(queryContext.text)
                 if response.result:
                     logger.success(f"Tool call response: {response}")

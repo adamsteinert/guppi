@@ -1,4 +1,6 @@
 
+TOOL_ENV_VTT_PATH = "/Users/adams/Documents/Yahara-Sync"
+TOOL_ENV_OBS_PATH = ""
 
 def get_salinity(current_value: float) -> str:
     """
@@ -27,6 +29,21 @@ def calculate_area(length: float, width: float) -> float:
         float: The area of the rectangle
     """
     return length * width
+
+def transcribe_notes_from_obs_meeting(finalTranscriptName: str, sourceFileName: str = "") -> str:
+    """
+    Transcribe the notes from an OBS meeting.
+
+    Args:
+        newNoteName: filename to write as the transcript name. This may be empty
+        sourceFileName: Optional name of the file containing the notes. If this is not provided,
+        find the most recent file in the OBS notes directory.
+
+    Returns the path for where the transcribed file is ultimately expected.
+    May raise an exception if the transcription fails.
+    """
+
+    return finalTranscriptName # "~/file/transcript.md"
 
 def get_everything_else():
     """This tool call represents an unknown request and always returns None"""
