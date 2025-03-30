@@ -33,7 +33,7 @@ class StoreMemoryCommand:
         return index != -1 and index < self.START_WINDOW_INDEX
 
     def get_response(self):
-        return self.response[random.randint(0, len(self.response))]
+        return self.response[random.randint(0, len(self.response)-1)]
 
     def execute_command(self, text: str, context: str = ""):
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
