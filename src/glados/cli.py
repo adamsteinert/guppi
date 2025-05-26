@@ -30,6 +30,9 @@ MODEL_URLS = {
 }
 
 
+
+
+
 assert MODEL_CHECKSUMS.keys() == MODEL_URLS.keys()
 
 

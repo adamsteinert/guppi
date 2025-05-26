@@ -8,6 +8,10 @@ class TestMemory:
     def setup_method(self):
         self.memory = Memory()
 
+    def teardown_method(self):
+        # Add any necessary cleanup code here
+        self.memory = None
+
     def test_simple(self):
         m = Memory()
         m.test_simple()

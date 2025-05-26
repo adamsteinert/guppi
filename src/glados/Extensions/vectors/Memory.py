@@ -7,10 +7,9 @@ class Memory:
     COLLECTION_NAME = "memory"
 
     def __init__(self):
-        pass
         # Initialize ChromaDB client
-        #self.client = chromadb.EphemeralClient()
-        #self.collection = self.client.create_collection(name=self.COLLECTION_NAME)
+        self.client = chromadb.EphemeralClient()
+        self.collection = self.client.get_or_create_collection(name=self.COLLECTION_NAME)
 
     def store_command_memories(self, dir):
         # Example documents with metadata
@@ -55,25 +54,25 @@ class Memory:
         # Generate embeddings and store with metadata
         for i, doc in enumerate(documents):
             # Generate embedding with Ollama
-            #response = ollama.embed(model=self.EMBEDDING_MODEL, input=doc["text"])
-            #embedding = response["embedding"]
+            response = ollama.embed(model=self.EMBEDDING_MODEL, input=doc["text"])
+            embedding = response["embedding"]
 
             # Store in ChromaDB with metadata
             self.collection.upsert(
                 ids=[f"doc_{i}"],
-                #embeddings=[embedding],
+                embeddings=[embedding],
                 documents=[doc["text"]],
                 metadatas=[doc["metadata"]]  # Pass the metadata dictionary
             )
 
     def query_memory(self, query):
-        #query_response = ollama.embed(model=self.EMBEDDING_MODEL, input=query)
-        #query_embedding = query_response["embedding"]
+        query_response = ollama.embed(model=self.EMBEDDING_MODEL, input=query)
+        query_embedding = query_response["embedding"]
 
         # 2. Retrieve similar documents
         results = self.collection.query(
             query_texts=query,
-            #query_embeddings=[query_embedding],
+            query_embeddings=[query_embedding],
             n_results=3
         )
 
