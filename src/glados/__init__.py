@@ -5,7 +5,7 @@ import engine
 
 def main():
     """Main entry point for the package."""
-    asyncio.run(engine.start())
+    engine.start()
 
 __version__ = "0.1.0"
 __all__ = ["Glados", "GladosConfig"]

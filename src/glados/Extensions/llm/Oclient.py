@@ -35,4 +35,4 @@ async def main():
 #            console.print(f"\n[bold red]Error:[/bold red] {e}", style="red")
     await agent.cleanup()
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

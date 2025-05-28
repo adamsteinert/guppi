@@ -5,7 +5,7 @@ Glados:
   interruptible: false
   silent: false
   wake_word: "guppy"
-  wake_word_variants: "Guffy|Goppy|Gopy|Copy|Guby|Gffy|Gumy|Cuopy"
+  wake_word_variants: "Guffy|Goppy|Gopy|Copy|Guby|Gffy|Gumy|Cuopy|Gap|Goppee"
   voice: "bm_george"
   #announcement: "May I remind you, sir, that you will never be happy until you realize that the one thing you must build for yourself, is your own joy."
   announcement: "You rang?"

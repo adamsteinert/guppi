@@ -29,7 +29,7 @@ from TTS import tts_glados, tts_kokoro
 from utils import spoken_text_converter as stc, SpokenTextConverter
 
 logger.remove(0)
-logger.add(sys.stderr, level="SUCCESS")
+logger.add(sys.stderr, level="DEBUG")
 
 
 class LlmContext():
@@ -213,13 +213,10 @@ class Glados:
         self.currently_speaking = threading.Event()
         self.shutdown_event = threading.Event()
 
-        self.langagent = LanguageAgent()
-
         #llm_thread = threading.Thread(target=self.process_llm)
         #llm_thread.start()
         llm_thread = threading.Thread(target=lambda: asyncio.run(self.process_llm()))
         llm_thread.start()
-
 
         tts_thread = threading.Thread(target=self.process_tts_thread)
         tts_thread.start()
@@ -333,10 +330,7 @@ class Glados:
         """
         return cls.from_config(GladosConfig.from_yaml(path))
 
-    async def configure_agents(self) -> None:
-        await self.langagent.configure()
-
-    async def start_listen_event_loop(self) -> None:
+    def start_listen_event_loop(self) -> None:
         """
         Start the voice assistant's listening event loop, continuously processing audio input.
 
@@ -367,7 +361,7 @@ class Glados:
             logger.info("Shutting down...")
             self.shutdown_event.set()
             self.input_stream.stop()
-            await self.langagent.cleanup()
+
 
     def _handle_audio_sample(self, sample: NDArray[np.float32], vad_confidence: bool) -> None:
         """
@@ -411,7 +405,6 @@ class Glados:
 
         if vad_confidence:  # Voice activity detected
             if not self.interruptible and self.currently_speaking.is_set():
-                logger.info("Interruption is disabled, and the assistant is currently speaking, ignoring new input.")
                 return
 
             sd.stop()  # Stop the audio stream to prevent overlap
@@ -469,11 +462,11 @@ class Glados:
             - Considers a match if the distance is below a predefined similarity threshold
         """
         assert self.wake_word is not None, "Wake word should not be None"
-
         # Text replace wake word variants when they are misunderstood or common misrepresentations
         text = re.sub(self.wake_word_variants, self.wake_word, text)
         words = text.split()
         closest_distance = min([distance(word.lower(), self.wake_word) for word in words])
+        logger.debug(f"Wake word detection for {text}: closest distance = {closest_distance}, threshold = {self.SIMILARITY_THRESHOLD}")
         return bool(closest_distance < self.SIMILARITY_THRESHOLD)
 
     def reset(self) -> None:
@@ -526,12 +519,11 @@ class Glados:
         detected_text = self.asr(self._samples)
 
         if detected_text:
-            logger.success(f"C ASR text: '{detected_text}'")
-
-            if self.wake_word and not self._wakeword_detected(detected_text):
-                logger.info(f"Required wake word {self.wake_word=} not detected.")
-            else:
+            logger.debug(f"Looking for wake word ({self.wake_word}): '{detected_text}' {self._wakeword_detected(detected_text)}")
+            if self._wakeword_detected(detected_text):
                 self.handle_command(detected_text)
+            else:
+                logger.info(f"Required wake word {self.wake_word=} not detected.")
 
         self.reset()
 
@@ -545,7 +537,7 @@ class Glados:
         #response = self.commandManager.process_commands(detected_text, "")
 
         self.llm_queue.put(LlmContext(detected_text, ""))
-        logger.info(f"Detected text enqueued: {detected_text}")
+        logger.debug(f"Detected text enqueued: {detected_text}")
         self.processing = True
         self.currently_speaking.set()
 
@@ -657,43 +649,43 @@ class Glados:
         percentage_played = min(int(progress / total_samples * 100), 100)
         return interrupted, percentage_played
 
-    def preprocess_llm_commands(self, queryContext: LlmContext) -> bool:
-        """Categorize incoming commands. Call tools if needed or manipulate the LlmContext
-        return True if the query is handled.
-        """
-        logger.success(f"LLM TXT|: {queryContext.text}")
-        logger.success(f"LLM SYS|: {queryContext.system}")
-
-        # Toolcalling
-        #self.tts_queue.put("analyzing")
-        handle_as_toolcall = analyze_request_for_tools(queryContext.text)
-        if handle_as_toolcall:
-            try:
-                #self.tts_queue.put("calculating")
-                response = process_tool_call_response(queryContext.text)
-                if response.result:
-                    logger.success(f"Tool call response: {response}")
-                    queryContext.text = SpokenTextConverter().text_to_spoken(
-                        f"The result, as calculated by {response.function_name }, is {response.result}.")
-                    #self._speak_or_log_text(queryContext.text)
-                    self.tts_queue.put(queryContext.text)
-                    self.tts_queue.put("<EOS>")
-                    return True
-            except Exception as e:
-                logger.error(f"Error processing tool call: {e}")
-                return False
-
-
-        # TODO: Internal state commands
-
-        # Update context and continue
-        if queryContext.system:
-            self.messages.append({"role": "system", "content": queryContext.system})
-
-        self.messages.append({"role": "user", "content": queryContext.text})
-
-        logger.success(f"LLM MSG|: {self.messages}")
-        return False
+    # def preprocess_llm_commands(self, queryContext: LlmContext) -> bool:
+    #     """Categorize incoming commands. Call tools if needed or manipulate the LlmContext
+    #     return True if the query is handled.
+    #     """
+    #     logger.success(f"LLM TXT|: {queryContext.text}")
+    #     logger.success(f"LLM SYS|: {queryContext.system}")
+    #
+    #     # Toolcalling
+    #     #self.tts_queue.put("analyzing")
+    #     handle_as_toolcall = analyze_request_for_tools(queryContext.text)
+    #     if handle_as_toolcall:
+    #         try:
+    #             #self.tts_queue.put("calculating")
+    #             response = process_tool_call_response(queryContext.text)
+    #             if response.result:
+    #                 logger.success(f"Tool call response: {response}")
+    #                 queryContext.text = SpokenTextConverter().text_to_spoken(
+    #                     f"The result, as calculated by {response.function_name }, is {response.result}.")
+    #                 #self._speak_or_log_text(queryContext.text)
+    #                 self.tts_queue.put(queryContext.text)
+    #                 self.tts_queue.put("<EOS>")
+    #                 return True
+    #         except Exception as e:
+    #             logger.error(f"Error processing tool call: {e}")
+    #             return False
+    #
+    #
+    #     # TODO: Internal state commands
+    #
+    #     # Update context and continue
+    #     if queryContext.system:
+    #         self.messages.append({"role": "system", "content": queryContext.system})
+    #
+    #     self.messages.append({"role": "user", "content": queryContext.text})
+    #
+    #     logger.success(f"LLM MSG|: {self.messages}")
+    #     return False
 
     async def process_llm(self) -> None:
         """
@@ -737,21 +729,23 @@ class Glados:
                 time.sleep(self.PAUSE_TIME)
 
     async def handle_agent_calls_async(self, detected_text: str):
-        if not self.langagent.is_ready():
-            return "The language agent is not ready yet. It appears configure() was never called."
+        #if not self.langagent.is_ready():
+        #    return "The language agent is not ready yet. It appears configure() was never called."
 
         logger.debug(f"HAC Detected text: {detected_text}")
-        response = await self.langagent.get_response(detected_text)
-        logger.debug(f"HAC Response: {response}")
-        return response
+
+        # #response = await self.langagent.get_response(detected_text)
+        await asyncio.sleep(2)
+        response = "A fake call to get response from the language agent, which is not implemented yet."
+        self.process_llm_response_stream(response)
+        # logger.debug(f"HAC Response: {response}")
+        # return response
 
     def process_llm_response_stream(self, detected_text):
-        sentence = []
+        # sentence = [detected_text]
 
-        if self.processing and sentence:
-            self._process_sentence(sentence)
-        self.tts_queue.put("<EOS>")  # Add end of stream token to the queue
-        logger.info("response stream finished, added <EOS> to TTS queue")
+        if self.processing and detected_text:
+            self._process_sentence(detected_text)
 
     async def call_llm(self, queryContext: LlmContext):
         logger.debug(f"Call LLM with QueryContext: {queryContext}")
@@ -797,7 +791,9 @@ class Glados:
         sentence = re.sub(r"\*.*?\*|\(.*?\)", "", sentence)
         sentence = sentence.replace("\n\n", ". ").replace("\n", ". ").replace("  ", " ").replace(":", " ")
         if sentence:
+            logger.debug(f"Queueing sentence: {sentence}")
             self.tts_queue.put(sentence)
+            self.tts_queue.put("<EOS>")
 
     def _clean_raw_bytes(self, line: bytes) -> dict[str, Any] | None:
         """
@@ -883,6 +879,7 @@ class Glados:
         """
         while not self.shutdown_event.is_set():
             try:
+                #logger.debug(f"TSS Queue Size: {self.tts_queue.qsize()}")
                 generated_text = self.tts_queue.get(timeout=self.PAUSE_TIME)
 
                 if generated_text == "<EOS>":
@@ -1014,7 +1011,7 @@ class Glados:
         return text
 
 
-async def start() -> None:
+def start() -> None:
     """Set up the LLM server and start GlaDOS.
 
     This function reads the configuration file, initializes the Glados voice assistant,
@@ -1027,10 +1024,9 @@ async def start() -> None:
     print('Starting guppi from engine:Start() !!')
     glados_config = GladosConfig.from_yaml("glados_config.yaml")
     glados = Glados.from_config(glados_config)
-    await glados.configure_agents()
-    await glados.start_listen_event_loop()
+    glados.start_listen_event_loop()
 
 
 if __name__ == "__main__":
     print('Starting guppi from engine init A')
-    asyncio.run(start())
+    start()

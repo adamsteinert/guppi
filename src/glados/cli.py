@@ -216,7 +216,7 @@ def say(text: str, config_path: str | Path = "glados_config.yaml") -> None:
     sd.wait()
 
 
-async def start(config_path: str | Path = "glados_config.yaml") -> None:
+def start(config_path: str | Path = "glados_config.yaml") -> None:
     """
     Start the GLaDOS voice assistant and initialize its listening event loop.
 
@@ -239,8 +239,7 @@ async def start(config_path: str | Path = "glados_config.yaml") -> None:
     glados = Glados.from_config(glados_config)
 
     print("Configuring glados")
-    await glados.configure_agents()
-    await glados.start_listen_event_loop()
+    glados.start_listen_event_loop()
 
 
 def tui(config_path: str | Path = "glados_config.yaml") -> None:
@@ -277,7 +276,7 @@ def models_valid() -> bool:
     return True
 
 
-async def main() -> None:
+def main() -> None:
     """
     Command-line interface (CLI) entry point for the GLaDOS voice assistant.
 
@@ -334,14 +333,14 @@ async def main() -> None:
         if args.command == "say":
             say(args.text, args.config)
         elif args.command == "start":
-            await start(args.config)
+            start(args.config)
         elif args.command == "tui":
             tui()
         else:
             # Default to start if no command specified
-            await start(DEFAULT_CONFIG)
+            start(DEFAULT_CONFIG)
 
 
 if __name__ == "__main__":
     print('Starting guppi from cli.py')
-    asyncio.run(main())
+    main()

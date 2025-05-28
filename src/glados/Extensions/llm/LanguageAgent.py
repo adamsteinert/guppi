@@ -11,12 +11,12 @@ class LanguageAgent:
     def __init__(self):
         self.toolManager = []
         self.agent = GeminiAgent(OllamaToolManager())
-        git_server_params = StdioServerParameters(
+        self.git_server_params = StdioServerParameters(
             command="uv",
             args=["--directory", "/Users/adams/source/production/mcp-guppi", "run", "mcp-guppi"],
             env={"PROJECTS_FILE": "/Users/adams/source/production/mcp-guppi/data/projects.md"}
         )
-        self.mcpclient = MCPClient(git_server_params)
+        #self.mcpclient = MCPClient(git_server_params)
         self.agent = GeminiAgent(OllamaToolManager())
 
     def is_ready(self):
