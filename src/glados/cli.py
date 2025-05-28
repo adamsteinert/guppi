@@ -1,3 +1,4 @@
+import asyncio
 import argparse
 import hashlib
 from pathlib import Path
@@ -5,9 +6,9 @@ from pathlib import Path
 import requests
 import sounddevice as sd  # type: ignore
 
-from .engine import Glados, GladosConfig
-from .TTS import tts_glados
-from .utils import spoken_text_converter as stc
+from engine import Glados, GladosConfig
+from TTS import tts_glados
+from utils import spoken_text_converter as stc
 
 DEFAULT_CONFIG = Path("configs/glados_config.yaml")
 
@@ -215,7 +216,7 @@ def say(text: str, config_path: str | Path = "glados_config.yaml") -> None:
     sd.wait()
 
 
-def start(config_path: str | Path = "glados_config.yaml") -> None:
+async def start(config_path: str | Path = "glados_config.yaml") -> None:
     """
     Start the GLaDOS voice assistant and initialize its listening event loop.
 
@@ -236,7 +237,10 @@ def start(config_path: str | Path = "glados_config.yaml") -> None:
     """
     glados_config = GladosConfig.from_yaml(str(config_path))
     glados = Glados.from_config(glados_config)
-    glados.start_listen_event_loop()
+
+    print("Configuring glados")
+    await glados.configure_agents()
+    await glados.start_listen_event_loop()
 
 
 def tui(config_path: str | Path = "glados_config.yaml") -> None:
@@ -273,7 +277,7 @@ def models_valid() -> bool:
     return True
 
 
-def main() -> None:
+async def main() -> None:
     """
     Command-line interface (CLI) entry point for the GLaDOS voice assistant.
 
@@ -330,13 +334,14 @@ def main() -> None:
         if args.command == "say":
             say(args.text, args.config)
         elif args.command == "start":
-            start(args.config)
+            await start(args.config)
         elif args.command == "tui":
             tui()
         else:
             # Default to start if no command specified
-            start(DEFAULT_CONFIG)
+            await start(DEFAULT_CONFIG)
 
 
 if __name__ == "__main__":
-    main()
+    print('Starting guppi from cli.py')
+    asyncio.run(main())

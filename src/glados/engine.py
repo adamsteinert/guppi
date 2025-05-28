@@ -1,3 +1,4 @@
+import asyncio
 import copy
 from dataclasses import dataclass
 import json
@@ -19,12 +20,13 @@ import sounddevice as sd  # type: ignore
 from sounddevice import CallbackFlags
 import yaml
 
-from .Extensions.Commands.command_type import CommandType
-from .Extensions.Tools.call_manager import analyze_request_for_tools, process_tool_call_response
-from .Extensions.Commands.command_manager import CommandManager
-from .ASR import VAD, AudioTranscriber
-from .TTS import tts_glados, tts_kokoro
-from .utils import spoken_text_converter as stc, SpokenTextConverter
+from Extensions.llm.LanguageAgent import LanguageAgent
+from Extensions.Commands.command_type import CommandType
+from Extensions.Tools.call_manager import analyze_request_for_tools, process_tool_call_response
+from Extensions.Commands.command_manager import CommandManager
+from ASR import VAD, AudioTranscriber
+from TTS import tts_glados, tts_kokoro
+from utils import spoken_text_converter as stc, SpokenTextConverter
 
 logger.remove(0)
 logger.add(sys.stderr, level="SUCCESS")
@@ -211,8 +213,13 @@ class Glados:
         self.currently_speaking = threading.Event()
         self.shutdown_event = threading.Event()
 
-        llm_thread = threading.Thread(target=self.process_llm)
+        self.langagent = LanguageAgent()
+
+        #llm_thread = threading.Thread(target=self.process_llm)
+        #llm_thread.start()
+        llm_thread = threading.Thread(target=lambda: asyncio.run(self.process_llm()))
         llm_thread.start()
+
 
         tts_thread = threading.Thread(target=self.process_tts_thread)
         tts_thread.start()
@@ -326,7 +333,10 @@ class Glados:
         """
         return cls.from_config(GladosConfig.from_yaml(path))
 
-    def start_listen_event_loop(self) -> None:
+    async def configure_agents(self) -> None:
+        await self.langagent.configure()
+
+    async def start_listen_event_loop(self) -> None:
         """
         Start the voice assistant's listening event loop, continuously processing audio input.
 
@@ -354,8 +364,10 @@ class Glados:
                 sample, vad_confidence = self._sample_queue.get()
                 self._handle_audio_sample(sample, vad_confidence)
         except KeyboardInterrupt:
+            logger.info("Shutting down...")
             self.shutdown_event.set()
             self.input_stream.stop()
+            await self.langagent.cleanup()
 
     def _handle_audio_sample(self, sample: NDArray[np.float32], vad_confidence: bool) -> None:
         """
@@ -523,25 +535,33 @@ class Glados:
 
         self.reset()
 
-    def handle_command(self, detected_text: str, context: str = ""):
+
+    def handle_command(self, detected_text: str):
         """This method uses the Commands subsystem to detect certain text patterns and
         direct GUPPY to handle them in a specific way.
 
         This may be direct handling, or passing to the LLM for further processing.
         """
-        response = self.commandManager.process_commands(detected_text, "")
+        #response = self.commandManager.process_commands(detected_text, "")
 
-        match response.commandType:
-            case CommandType.PASS_TO_LLM:
-                logger.success("Passing to LLM")
-                self.llm_queue.put(LlmContext(detected_text, response.context))
-                self.processing = True
-                self.currently_speaking.set()
+        self.llm_queue.put(LlmContext(detected_text, ""))
+        logger.info(f"Detected text enqueued: {detected_text}")
+        self.processing = True
+        self.currently_speaking.set()
 
-            case CommandType.EXPLICIT_RESPONSE:
-                self._speak_or_log_text(response.text)
-                if not self.interruptible:
-                    sd.wait()
+        # response = self.commandManager.process_commands(detected_text, "")
+        #
+        # match response.commandType:
+        #     case CommandType.PASS_TO_LLM:
+        #         logger.success("Passing to LLM")
+        #         self.llm_queue.put(LlmContext(detected_text, response.context))
+        #         self.processing = True
+        #         self.currently_speaking.set()
+        #
+        #     case CommandType.EXPLICIT_RESPONSE:
+        #         self._speak_or_log_text(response.text)
+        #         if not self.interruptible:
+        #             sd.wait()
 
 
     def asr(self, samples: list[NDArray[np.float32]]) -> str:
@@ -675,7 +695,7 @@ class Glados:
         logger.success(f"LLM MSG|: {self.messages}")
         return False
 
-    def process_llm(self) -> None:
+    async def process_llm(self) -> None:
         """
         Process text through the Language Model (LLM) and generate conversational responses.
 
@@ -707,15 +727,39 @@ class Glados:
         while not self.shutdown_event.is_set():
             try:
                 queryContext = self.llm_queue.get(timeout=0.1)
+                await self.call_llm(queryContext)
 
                 # Preprocess the command. when True, command is handled. Don't pass on to the LLM again.
-                if not self.preprocess_llm_commands(queryContext):
-                    self.call_llm()
+                #if not self.preprocess_llm_commands(queryContext):
+                #    self.call_llm()
 
             except queue.Empty:
                 time.sleep(self.PAUSE_TIME)
 
-    def call_llm(self):
+    async def handle_agent_calls_async(self, detected_text: str):
+        if not self.langagent.is_ready():
+            return "The language agent is not ready yet. It appears configure() was never called."
+
+        logger.debug(f"HAC Detected text: {detected_text}")
+        response = await self.langagent.get_response(detected_text)
+        logger.debug(f"HAC Response: {response}")
+        return response
+
+    def process_llm_response_stream(self, detected_text):
+        sentence = []
+
+        if self.processing and sentence:
+            self._process_sentence(sentence)
+        self.tts_queue.put("<EOS>")  # Add end of stream token to the queue
+        logger.info("response stream finished, added <EOS> to TTS queue")
+
+    async def call_llm(self, queryContext: LlmContext):
+        logger.debug(f"Call LLM with QueryContext: {queryContext}")
+        text = await self.handle_agent_calls_async(queryContext.text)
+        logger.info(f"I have the llm response: {text}")
+        self.process_llm_response_stream(text)
+
+    def call_llm_old_streaming(self):
         data = {
             "model": self.model,
             "stream": True,
@@ -730,42 +774,8 @@ class Glados:
                 json=data,
                 stream=True,
         ) as response:
-            sentence = []
-            for line in response.iter_lines():
-                if self.processing is False:
-                    break  # If the stop flag is set from new voice input, halt processing
-                if line:  # Filter out empty keep-alive new lines
-                    try:
-                        cleaned_line = self._clean_raw_bytes(line)
-                        if cleaned_line:  # Add check for empty cleaned line
-                            chunk = self._process_chunk(cleaned_line)
-                            if chunk:
-                                sentence.append(chunk)
-                                # If there is a pause token, send the sentence to the TTS queue
-                                if (
-                                        chunk
-                                        in [
-                                    ".",
-                                    "!",
-                                    "?",
-                                    ":",
-                                    ";",
-                                    "?!",
-                                    "\n",
-                                    "\n\n",
-                                ]
-                                        and sentence[-2].isdigit() is False
-                                ):  # Don't split on numbers!
-                                    logger.info(f"Chunk: {chunk}")
-                                    self._process_sentence(sentence)
-                                    sentence = []
-                    except Exception as e:
-                        logger.error(f"Error processing line: {e}")
-                        continue
+            self.process_llm_response_stream(response)
 
-            if self.processing and sentence:
-                self._process_sentence(sentence)
-            self.tts_queue.put("<EOS>")  # Add end of stream token to the queue
 
     def _process_sentence(self, current_sentence: list[str]) -> None:
         """
@@ -1004,7 +1014,7 @@ class Glados:
         return text
 
 
-def start() -> None:
+async def start() -> None:
     """Set up the LLM server and start GlaDOS.
 
     This function reads the configuration file, initializes the Glados voice assistant,
@@ -1014,10 +1024,13 @@ def start() -> None:
         FileNotFoundError: If the configuration file is not found.
         yaml.YAMLError: If there is an error parsing the YAML configuration file.
     """
+    print('Starting guppi from engine:Start() !!')
     glados_config = GladosConfig.from_yaml("glados_config.yaml")
     glados = Glados.from_config(glados_config)
-    glados.start_listen_event_loop()
+    await glados.configure_agents()
+    await glados.start_listen_event_loop()
 
 
 if __name__ == "__main__":
-    start()
+    print('Starting guppi from engine init A')
+    asyncio.run(start())

@@ -357,6 +357,7 @@ class GladosUI(App[None]):
         glados_config = GladosConfig.from_yaml(str(config_path))
         glados = Glados.from_config(glados_config)
 
+        print("commented tui startup due to asyunc changes")
         self.glados = self.run_worker(glados.start_listen_event_loop, exclusive=False, thread=True)
         pass
 
