@@ -2,6 +2,7 @@ import asyncio
 import copy
 from dataclasses import dataclass
 import json
+from logging import exception
 from pathlib import Path
 import queue
 import re
@@ -13,6 +14,7 @@ from typing import Any
 from Levenshtein import distance
 from loguru import logger
 import numpy as np
+from mcp import StdioServerParameters
 from numpy.typing import NDArray
 from pydantic import BaseModel, HttpUrl
 import requests
@@ -20,9 +22,7 @@ import sounddevice as sd  # type: ignore
 from sounddevice import CallbackFlags
 import yaml
 
-from Extensions.llm.LanguageAgent import LanguageAgent
-from Extensions.Commands.command_type import CommandType
-from Extensions.Tools.call_manager import analyze_request_for_tools, process_tool_call_response
+from Extensions.llm.LanguageAgent import LanguageAgent, GeminiAgent, MCPClient, OllamaToolManager
 from Extensions.Commands.command_manager import CommandManager
 from ASR import VAD, AudioTranscriber
 from TTS import tts_glados, tts_kokoro
@@ -716,17 +716,33 @@ class Glados:
         - Uses a timeout mechanism to prevent blocking
         - Supports graceful interruption of LLM processing
         """
-        while not self.shutdown_event.is_set():
-            try:
-                queryContext = self.llm_queue.get(timeout=0.1)
-                await self.call_llm(queryContext)
 
-                # Preprocess the command. when True, command is handled. Don't pass on to the LLM again.
-                #if not self.preprocess_llm_commands(queryContext):
-                #    self.call_llm()
+        agent = GeminiAgent(OllamaToolManager())
+        server_params = StdioServerParameters(
+            command="uv",
+            args=["--directory", "/Users/adams/source/production/mcp-guppi", "run", "mcp-guppi"],
+            env={"PROJECTS_FILE": "/Users/adams/source/production/mcp-guppi/data/projects.md"}
+        )
 
-            except queue.Empty:
-                time.sleep(self.PAUSE_TIME)
+        async with MCPClient(server_params) as mcpclient:
+            _ ,tools_list = await mcpclient.get_available_tools()
+            for tool in tools_list:
+                agent.tool_manager.register_tool(
+                    name=tool.name,
+                    function=mcpclient.call_tool, # Passing the function reference here
+                    description=tool.description,
+                    inputSchema=tool.inputSchema
+                )
+
+            while not self.shutdown_event.is_set():
+                try:
+                    queryContext = self.llm_queue.get(timeout=0.1)
+                    #await self.call_llm(queryContext)
+                    result = await agent.get_response(queryContext.text)
+                    self.process_llm_response_stream(result)
+
+                except queue.Empty:
+                    time.sleep(self.PAUSE_TIME)
 
     async def handle_agent_calls_async(self, detected_text: str):
         #if not self.langagent.is_ready():
@@ -747,11 +763,11 @@ class Glados:
         if self.processing and detected_text:
             self._process_sentence(detected_text)
 
-    async def call_llm(self, queryContext: LlmContext):
-        logger.debug(f"Call LLM with QueryContext: {queryContext}")
-        text = await self.handle_agent_calls_async(queryContext.text)
-        logger.info(f"I have the llm response: {text}")
-        self.process_llm_response_stream(text)
+    # async def call_llm(self, queryContext: LlmContext):
+    #     logger.debug(f"Call LLM with QueryContext: {queryContext}")
+    #     text = await self.handle_agent_calls_async(queryContext.text)
+    #     logger.info(f"I have the llm response: {text}")
+    #     self.process_llm_response_stream(text)
 
     def call_llm_old_streaming(self):
         data = {
