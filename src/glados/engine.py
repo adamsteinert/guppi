@@ -1,9 +1,6 @@
 import asyncio
 import copy
-from dataclasses import dataclass
 import json
-from logging import exception
-from pathlib import Path
 import queue
 import re
 import sys
@@ -16,103 +13,20 @@ from loguru import logger
 import numpy as np
 from mcp import StdioServerParameters
 from numpy.typing import NDArray
-from pydantic import BaseModel, HttpUrl
-import requests
 import sounddevice as sd  # type: ignore
 from sounddevice import CallbackFlags
-import yaml
 
-from Extensions.llm.LanguageAgent import LanguageAgent, GeminiAgent, MCPClient, OllamaToolManager
+from Extensions.llm.LanguageAgent import GeminiAgent, MCPClient, OllamaToolManager
 from Extensions.Commands.command_manager import CommandManager
 from ASR import VAD, AudioTranscriber
 from TTS import tts_glados, tts_kokoro
-from utils import spoken_text_converter as stc, SpokenTextConverter
+from audio_message import AudioMessage
+from glados_config import GladosConfig
+from llm_context import LlmContext
+from utils import spoken_text_converter as stc
 
 logger.remove(0)
 logger.add(sys.stderr, level="DEBUG")
-
-
-class LlmContext():
-    def __init__(self, text: str, system: str) -> None:
-        self.text = text
-        self.system = system
-
-class PersonalityPrompt(BaseModel):
-    system: str | None = None
-    user: str | None = None
-    assistant: str | None = None
-
-    def to_chat_message(self) -> dict[str, str]:
-        """Convert the prompt to a chat message format.
-
-        Returns:
-            dict[str, str]: A single chat message dictionary
-
-        Raises:
-            ValueError: If the prompt does not contain exactly one non-null field
-        """
-        for field, value in self.model_dump(exclude_none=True).items():
-            return {"role": field, "content": value}
-        raise ValueError("PersonalityPrompt must have exactly one non-null field")
-
-
-class GladosConfig(BaseModel):
-    completion_url: HttpUrl
-    model: str
-    api_key: str | None = None
-    interruptible: bool = True
-    silent: bool = False
-    wake_word: str | None = None
-    wake_word_variants: str = ""
-    voice: str
-    announcement: str | None = None
-    personality_preprompt: list[PersonalityPrompt]
-
-    @classmethod
-    def from_yaml(cls, path: str | Path, key_to_config: tuple[str, ...] = ("Glados",)) -> "GladosConfig":
-        """
-        Load a GladosConfig instance from a YAML configuration file.
-
-        Parameters:
-            path: Path to the YAML configuration file
-            key_to_config: Tuple of keys to navigate nested configuration
-
-        Returns:
-            GladosConfig: Configuration object with validated settings
-
-        Raises:
-            ValueError: If the YAML content is invalid
-            OSError: If the file cannot be read
-            pydantic.ValidationError: If the configuration is invalid
-        """
-        path = Path(path)
-
-        # Try different encodings
-        for encoding in ["utf-8", "utf-8-sig"]:
-            try:
-                data = yaml.safe_load(path.read_text(encoding=encoding))
-                break
-            except UnicodeDecodeError:
-                if encoding == "utf-8-sig":
-                    raise
-
-        # Navigate through nested keys
-        config = data
-        for key in key_to_config:
-            config = config[key]
-
-        return cls(**cls.model_validate(config).dict())
-
-    def to_chat_messages(self) -> list[dict[str, str]]:
-        """Convert personality preprompt to chat message format."""
-        return [prompt.to_chat_message() for prompt in self.personality_preprompt]
-
-
-@dataclass
-class AudioMessage:
-    audio: NDArray[np.float32]
-    text: str
-    is_eos: bool = False
 
 
 class Glados:
@@ -213,8 +127,6 @@ class Glados:
         self.currently_speaking = threading.Event()
         self.shutdown_event = threading.Event()
 
-        #llm_thread = threading.Thread(target=self.process_llm)
-        #llm_thread.start()
         llm_thread = threading.Thread(target=lambda: asyncio.run(self.process_llm()))
         llm_thread.start()
 
@@ -318,12 +230,6 @@ class Glados:
     def from_yaml(cls, path: str) -> "Glados":
         """
         Create a Glados instance from a configuration file.
-
-        Parameters:
-            path (str): Path to the YAML configuration file containing Glados settings.
-
-        Returns:
-            Glados: A new Glados instance configured with settings from the specified YAML file.
 
         Example:
             glados = Glados.from_yaml('config/default.yaml')
@@ -541,20 +447,6 @@ class Glados:
         self.processing = True
         self.currently_speaking.set()
 
-        # response = self.commandManager.process_commands(detected_text, "")
-        #
-        # match response.commandType:
-        #     case CommandType.PASS_TO_LLM:
-        #         logger.success("Passing to LLM")
-        #         self.llm_queue.put(LlmContext(detected_text, response.context))
-        #         self.processing = True
-        #         self.currently_speaking.set()
-        #
-        #     case CommandType.EXPLICIT_RESPONSE:
-        #         self._speak_or_log_text(response.text)
-        #         if not self.interruptible:
-        #             sd.wait()
-
 
     def asr(self, samples: list[NDArray[np.float32]]) -> str:
         """
@@ -649,43 +541,6 @@ class Glados:
         percentage_played = min(int(progress / total_samples * 100), 100)
         return interrupted, percentage_played
 
-    # def preprocess_llm_commands(self, queryContext: LlmContext) -> bool:
-    #     """Categorize incoming commands. Call tools if needed or manipulate the LlmContext
-    #     return True if the query is handled.
-    #     """
-    #     logger.success(f"LLM TXT|: {queryContext.text}")
-    #     logger.success(f"LLM SYS|: {queryContext.system}")
-    #
-    #     # Toolcalling
-    #     #self.tts_queue.put("analyzing")
-    #     handle_as_toolcall = analyze_request_for_tools(queryContext.text)
-    #     if handle_as_toolcall:
-    #         try:
-    #             #self.tts_queue.put("calculating")
-    #             response = process_tool_call_response(queryContext.text)
-    #             if response.result:
-    #                 logger.success(f"Tool call response: {response}")
-    #                 queryContext.text = SpokenTextConverter().text_to_spoken(
-    #                     f"The result, as calculated by {response.function_name }, is {response.result}.")
-    #                 #self._speak_or_log_text(queryContext.text)
-    #                 self.tts_queue.put(queryContext.text)
-    #                 self.tts_queue.put("<EOS>")
-    #                 return True
-    #         except Exception as e:
-    #             logger.error(f"Error processing tool call: {e}")
-    #             return False
-    #
-    #
-    #     # TODO: Internal state commands
-    #
-    #     # Update context and continue
-    #     if queryContext.system:
-    #         self.messages.append({"role": "system", "content": queryContext.system})
-    #
-    #     self.messages.append({"role": "user", "content": queryContext.text})
-    #
-    #     logger.success(f"LLM MSG|: {self.messages}")
-    #     return False
 
     async def process_llm(self) -> None:
         """
@@ -762,29 +617,6 @@ class Glados:
 
         if self.processing and detected_text:
             self._process_sentence(detected_text)
-
-    # async def call_llm(self, queryContext: LlmContext):
-    #     logger.debug(f"Call LLM with QueryContext: {queryContext}")
-    #     text = await self.handle_agent_calls_async(queryContext.text)
-    #     logger.info(f"I have the llm response: {text}")
-    #     self.process_llm_response_stream(text)
-
-    def call_llm_old_streaming(self):
-        data = {
-            "model": self.model,
-            "stream": True,
-            "messages": self.messages,
-        }
-        logger.debug(f"starting request on {self.messages=}")
-        logger.debug("Performing request to LLM server...")
-        # Perform the request and process the stream
-        with requests.post(
-                self.completion_url,
-                headers=self.prompt_headers,
-                json=data,
-                stream=True,
-        ) as response:
-            self.process_llm_response_stream(response)
 
 
     def _process_sentence(self, current_sentence: list[str]) -> None:
