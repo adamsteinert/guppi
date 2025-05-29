@@ -7,6 +7,57 @@ NEW: If you want to chat or join the community, [Join our discord!](https://disc
 
 https://github.com/user-attachments/assets/c22049e4-7fba-4e84-8667-2c6657a656a0
 
+## Call Logs 
+
+```
+2025-05-28 10:21:23.552 | DEBUG    | engine:_wakeword_detected:469 - Wake word detection for Guy Wat tools are available.: closest distance = 2, threshold = 3
+2025-05-28 10:21:23.552 | DEBUG    | engine:handle_command:540 - Detected text enqueued: Guy Wat tools are available.
+2025-05-28 10:21:23.552 | DEBUG    | engine:reset:487 - Resetting recorder...
+2025-05-28 10:21:23.552 | DEBUG    | engine:call_llm:751 - Call LLM with QueryContext: <engine.LlmContext object at 0x14a846a20>
+2025-05-28 10:21:23.552 | DEBUG    | engine:handle_agent_calls_async:735 - HAC Detected text: Guy Wat tools are available.
+2025-05-28 10:21:25.554 | INFO     | engine:call_llm:753 - I have the llm response: None
+
+
+2025-05-28 10:29:00.475 | DEBUG    | engine:call_llm:751 - Call LLM with QueryContext: <engine.LlmContext object at 0x31bc48440>
+2025-05-28 10:29:00.475 | DEBUG    | engine:handle_agent_calls_async:735 - HAC Detected text: Copy what tools are available?
+2025-05-28 10:29:02.476 | DEBUG    | engine:_process_sentence:794 - Queueing sentence: A fake call to get response from the language agent, which is not implemented yet.
+2025-05-28 10:29:02.476 | INFO     | engine:call_llm:753 - I have the llm response: None
+2025-05-28 10:29:02.476 | INFO     | engine:process_tts_thread:890 - LLM text: A fake call to get response from the language agent, which is not implemented yet.
+2025-05-28 10:29:03.261 | INFO     | engine:process_tts_thread:895 - TTS Complete, inference: 0.78, length: 6.02s
+2025-05-28 10:29:09.438 | DEBUG    | engine:process_audio_thread:928 - Processing end of stream
+2025-05-28 10:29:09.438 | DEBUG    | engine:process_audio_thread:931 - Appending assistant message: a fake call to get response from the language agent, which is not implemented yet.
+2025-05-28 10:29:09.438 | DEBUG    | engine:process_audio_thread:935 - Speaking event cleared
+
+
+
+
+_wakeword_detected-> handle_command->
+
+Process_llm-> call_llm-> handle_agent_calls_async-> process_llm_response_stream-> _process_sentence-> tts_queue.put->
+
+process_tts_thread-> audio_queue.put-> 
+
+
+
+
+#     async with MCPClient(git_server_params) as mcpclient:
+#         _ ,tools_list = await mcpclient.get_available_tools()
+#         console.clear()
+#         console.print(Panel.fit("🚀 Welcome to Ollama MCP Client 🚀", padding=(1, 4)))
+#         console.status("Registering Tools", spinner="dots")
+#         for tool in tools_list:
+#             agent.tool_manager.register_tool(
+#                 name=tool.name,
+#                 function=mcpclient.call_tool, # Passing the function reference here
+#                 description=tool.description,
+#                 inputSchema=tool.inputSchema
+#             )
+#
+#         while True:
+#             try:
+```
+
+
 ## Update 3-1-2025 *Got GLaDOS running on an 8Gb SBC!*
 
 https://github.com/user-attachments/assets/99e599bb-4701-438a-a311-8e6cd595796c
