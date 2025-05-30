@@ -647,23 +647,19 @@ class Glados:
 
         #GPT partition
         parts = re.split(r'(?<=[.!?;:])', sentence)  # Split at sentence-ending punctuation, keeping the delimiter
-        snes = []
-        current = ""
-
+        # remove sentences that include only punctuation or whitespace
+        parts = [part.strip() for part in parts if part.strip() and not re.match(r'^[\s\W]+$', part)]
 
         CHUNK_SIZE_SPOKEN_TEXT = 125
+        snes = []
+        current = ""
         for part in parts:
-            part = part.strip()
-            if not part:
-                continue
-            if len(current) + len(part) <= CHUNK_SIZE_SPOKEN_TEXT:
-                current += (" " if current else "") + part
-            else:
-                if current:
-                    snes.append(current.strip())
+            joined = current.join(" " + part)
+            if len(joined) > CHUNK_SIZE_SPOKEN_TEXT:
+                snes.append(current)
                 current = part
-        if current:
-            snes.append(current.strip())
+            else:
+                current = joined
 
         for s in snes:
             logger.debug(f"@@@ Queueing sentence: {s}")
