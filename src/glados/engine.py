@@ -592,30 +592,28 @@ class Glados:
             while not self.shutdown_event.is_set():
                 try:
                     queryContext = self.llm_queue.get(timeout=0.1)
-                    #await self.call_llm(queryContext)
                     result = await agent.get_response(queryContext.text)
                     self.process_llm_response_stream(result)
 
                 except queue.Empty:
                     time.sleep(self.PAUSE_TIME)
 
-    async def handle_agent_calls_async(self, detected_text: str):
-        #if not self.langagent.is_ready():
-        #    return "The language agent is not ready yet. It appears configure() was never called."
-
-        logger.debug(f"HAC Detected text: {detected_text}")
-
-        # #response = await self.langagent.get_response(detected_text)
-        await asyncio.sleep(2)
-        response = "A fake call to get response from the language agent, which is not implemented yet."
-        self.process_llm_response_stream(response)
-        # logger.debug(f"HAC Response: {response}")
-        # return response
+    # async def handle_agent_calls_async(self, detected_text: str):
+    #     #if not self.langagent.is_ready():
+    #     #    return "The language agent is not ready yet. It appears configure() was never called."
+    #
+    #     logger.debug(f"HAC Detected text: {detected_text}")
+    #
+    #     logger.debug(f"HAC Got response: {detected_text}")
+    #     self.process_llm_response_stream(response)
+    #     # logger.debug(f"HAC Response: {response}")
+    #     # return response
 
     def process_llm_response_stream(self, detected_text):
         # sentence = [detected_text]
 
         if self.processing and detected_text:
+        #if detected_text:
             self._process_sentence(detected_text)
 
 
@@ -639,7 +637,7 @@ class Glados:
         sentence = re.sub(r"\*.*?\*|\(.*?\)", "", sentence)
         sentence = sentence.replace("\n\n", ". ").replace("\n", ". ").replace("  ", " ").replace(":", " ")
         if sentence:
-            logger.debug(f"Queueing sentence: {sentence}")
+            logger.debug(f"@@@ Queueing sentence: {sentence}")
             self.tts_queue.put(sentence)
             self.tts_queue.put("<EOS>")
 
