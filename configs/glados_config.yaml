@@ -2,7 +2,7 @@ Glados:
   completion_url: "http://localhost:11434/api/chat"
   model: "llama3.2"
   api_key: "Bearer your_api_key_here"
-  interruptible: false
+  interruptible: true
   wake_word: "guppy"
   voice: "bm_george"
   announcement: "All neural network modules are now loaded. The System is Operational... You rang?"

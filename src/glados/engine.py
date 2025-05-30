@@ -121,6 +121,7 @@ class Glados:
         self.audio_queue: queue.Queue[AudioMessage] = queue.Queue()
 
         self.processing = False
+        self.force_interrupt = False
         self.interruptible = interruptible
         self.silent = silent
 
@@ -371,6 +372,13 @@ class Glados:
         # Text replace wake word variants when they are misunderstood or common misrepresentations
         text = re.sub(self.wake_word_variants, self.wake_word, text)
         words = text.split()
+        #print(len(words), words)
+        if len(words) == 2 and words[0].lower() == "command":
+            if words[1].lower().startswith("stop"):
+                logger.debug("!! Command STOP detected")
+                self.force_interrupt = True
+                return False
+
         closest_distance = min([distance(word.lower(), self.wake_word) for word in words])
         logger.debug(f"Wake word detection for {text}: closest distance = {closest_distance}, threshold = {self.SIMILARITY_THRESHOLD}")
         return bool(closest_distance < self.SIMILARITY_THRESHOLD)
@@ -425,7 +433,6 @@ class Glados:
         detected_text = self.asr(self._samples)
 
         if detected_text:
-            logger.debug(f"Looking for wake word ({self.wake_word}): '{detected_text}' {self._wakeword_detected(detected_text)}")
             if self._wakeword_detected(detected_text):
                 self.handle_command(detected_text)
             else:
@@ -440,8 +447,6 @@ class Glados:
 
         This may be direct handling, or passing to the LLM for further processing.
         """
-        #response = self.commandManager.process_commands(detected_text, "")
-
         self.llm_queue.put(LlmContext(detected_text, ""))
         logger.debug(f"Detected text enqueued: {detected_text}")
         self.processing = True
@@ -516,7 +521,9 @@ class Glados:
         ) -> tuple[NDArray[np.float32], sd.CallbackStop | None]:
             nonlocal progress, interrupted
             progress += frames
+            #TODO: do separate interrupt outside of processing
             if self.processing is False or self.shutdown_event.is_set():
+            #if self.force_interrupt and self.shutdown_event.is_set():
                 interrupted = True
                 completion_event.set()
                 return outdata, sd.CallbackStop
@@ -593,6 +600,7 @@ class Glados:
                 try:
                     queryContext = self.llm_queue.get(timeout=0.1)
                     result = await agent.get_response(queryContext.text)
+                    self.currently_speaking.set()
                     self.process_llm_response_stream(result)
 
                 except queue.Empty:
@@ -636,9 +644,30 @@ class Glados:
         sentence = "".join(current_sentence)
         sentence = re.sub(r"\*.*?\*|\(.*?\)", "", sentence)
         sentence = sentence.replace("\n\n", ". ").replace("\n", ". ").replace("  ", " ").replace(":", " ")
-        if sentence:
-            logger.debug(f"@@@ Queueing sentence: {sentence}")
-            self.tts_queue.put(sentence)
+
+        #GPT partition
+        parts = re.split(r'(?<=[.!?;:])', sentence)  # Split at sentence-ending punctuation, keeping the delimiter
+        snes = []
+        current = ""
+
+
+        CHUNK_SIZE_SPOKEN_TEXT = 125
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            if len(current) + len(part) <= CHUNK_SIZE_SPOKEN_TEXT:
+                current += (" " if current else "") + part
+            else:
+                if current:
+                    snes.append(current.strip())
+                current = part
+        if current:
+            snes.append(current.strip())
+
+        for s in snes:
+            logger.debug(f"@@@ Queueing sentence: {s}")
+            self.tts_queue.put(s)
             self.tts_queue.put("<EOS>")
 
     def _clean_raw_bytes(self, line: bytes) -> dict[str, Any] | None:
@@ -804,6 +833,7 @@ class Glados:
                         # Clear remaining audio queue
                         with self.audio_queue.mutex:
                             self.audio_queue.queue.clear()
+                            self.force_interrupt = False
                     else:
                         assistant_text.append(audio_msg.text)
 
