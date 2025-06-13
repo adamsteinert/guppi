@@ -2,7 +2,7 @@ Glados:
   completion_url: "http://localhost:11434/api/chat"
   model: "llama3.2"
   api_key: "Bearer your_api_key_here"
-  interruptible: true
+  interruptible: false
   wake_word: null
   voice: "af_bella"
   announcement: "Hi there, I am now up and running, and listening for your commands"

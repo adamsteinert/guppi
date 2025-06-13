@@ -25,7 +25,8 @@ from glados_config import GladosConfig
 from llm_context import LlmContext
 from utils import spoken_text_converter as stc
 
-logger.remove(0)
+# Set up logger to outputto stderr with DEBUG level
+logger.remove()
 logger.add(sys.stderr, level="DEBUG")
 
 
@@ -449,8 +450,8 @@ class Glados:
         """
         self.llm_queue.put(LlmContext(detected_text, ""))
         logger.debug(f"Detected text enqueued: {detected_text}")
-        self.processing = True
-        self.currently_speaking.set()
+        #self.processing = True
+        #self.currently_speaking.set()
 
 
     def asr(self, samples: list[NDArray[np.float32]]) -> str:
@@ -522,8 +523,8 @@ class Glados:
             nonlocal progress, interrupted
             progress += frames
             #TODO: do separate interrupt outside of processing
-            if self.processing is False or self.shutdown_event.is_set():
-            #if self.force_interrupt and self.shutdown_event.is_set():
+            #if self.processing is False or self.shutdown_event.is_set():
+            if self.shutdown_event.is_set():
                 interrupted = True
                 completion_event.set()
                 return outdata, sd.CallbackStop
@@ -549,6 +550,30 @@ class Glados:
         return interrupted, percentage_played
 
 
+    async def process_item(self, agent:GeminiAgent, queryContext: LlmContext) -> str:
+        import random
+        """Async function that processes an item (simulates some work)"""
+        # Simulate some async work
+        #await asyncio.sleep(random.uniform(0.5, 2.0))
+        # return f"Processed: {item}"
+        task = asyncio.create_task(agent.get_response(queryContext.text))
+        while True:
+            await asyncio.sleep(0.25)
+            if task.done():
+                break
+
+        return task.result()
+
+    def completion_callback(self, task: asyncio.Task, original_item: LlmContext):
+        """Callback function that runs when a task completes"""
+        try:
+            result = task.result()
+            logger.debug(f"Callback: Original item '{original_item}' -> {result}")
+            self.process_llm_response_stream(result)
+        except Exception as e:
+            logger.error(f"Callback: Task failed for '{original_item}': {e}")
+
+
     async def process_llm(self) -> None:
         """
         Process text through the Language Model (LLM) and generate conversational responses.
@@ -570,7 +595,8 @@ class Glados:
         - Stops processing if shutdown event is set or processing flag is False
 
         Side Effects:
-        - Modifies `self.messages` by appending user messages
+
+
         - Puts processed sentences into `self.tts_queue`
         - Logs debug and error information
 
@@ -598,17 +624,35 @@ class Glados:
 
             while not self.shutdown_event.is_set():
                 try:
-                    queryContext = self.llm_queue.get(timeout=0.1)
-                    result = await agent.get_response(queryContext.text)
-                    self.currently_speaking.set()
-                    self.process_llm_response_stream(result)
+
+
+                    # Service calls async with tasks and a follow-up queue
+                    # https://docs.python.org/3/library/asyncio-task.html
+                    # e.g. get task, associate it with an id. Wait in loop with 500ms pauses
+                    # while allowing new queue items to flow in during processing.
+                    # if a task takes more than 2 seconds, give a processing response message to guppi
+                    # on completion of a task, run speaking loop and response streaming.
+                    if not self.llm_queue.empty():
+                        queryContext = self.llm_queue.get_nowait()# .get(timeout=0.1)
+                        task = asyncio.create_task(self.process_item(agent, queryContext))
+                        logger.debug("creating task and callback for item: %s", queryContext)
+                        from functools import partial
+                        callback = partial(self.completion_callback, original_item=queryContext)
+                        task.add_done_callback(callback)
+                        await asyncio.sleep(0.25)
+                    else:
+                        await asyncio.sleep(0.25)
+                    #result = await agent.get_response(queryContext.text)
+                    #self.currently_speaking.set()
+                    #self.process_llm_response_stream(result)
 
                 except queue.Empty:
-                    time.sleep(self.PAUSE_TIME)
+                    await asyncio.sleep(0.25)  # Pause briefly to avoid busy-waiting
+                    #time.sleep(self.PAUSE_TIME)
 
     # async def handle_agent_calls_async(self, detected_text: str):
     #     #if not self.langagent.is_ready():
-    #     #    return "The language agent is not ready yet. It appears configure() was never called."
+    #     #    return "The lan#guage agent is not ready yet. It appears configure() was never called."
     #
     #     logger.debug(f"HAC Detected text: {detected_text}")
     #
@@ -620,8 +664,8 @@ class Glados:
     def process_llm_response_stream(self, detected_text):
         # sentence = [detected_text]
 
-        if self.processing and detected_text:
-        #if detected_text:
+        #if self.processing and detected_text:
+        if detected_text:
             self._process_sentence(detected_text)
 
 
@@ -642,29 +686,37 @@ class Glados:
             - Only adds non-empty sentences to the TTS queue
         """
         sentence = "".join(current_sentence)
-        sentence = re.sub(r"\*.*?\*|\(.*?\)", "", sentence)
-        sentence = sentence.replace("\n\n", ". ").replace("\n", ". ").replace("  ", " ").replace(":", " ")
+        logger.debug(f"@@@ Queueing sentence: {sentence}")
+        self.currently_speaking.set()
+        self.tts_queue.put(sentence)
+        self.tts_queue.put("<EOS>")
 
-        #GPT partition
-        parts = re.split(r'(?<=[.!?;:])', sentence)  # Split at sentence-ending punctuation, keeping the delimiter
-        # remove sentences that include only punctuation or whitespace
-        parts = [part.strip() for part in parts if part.strip() and not re.match(r'^[\s\W]+$', part)]
-
-        CHUNK_SIZE_SPOKEN_TEXT = 125
-        snes = []
-        current = ""
-        for part in parts:
-            joined = current.join(" " + part)
-            if len(joined) > CHUNK_SIZE_SPOKEN_TEXT:
-                snes.append(current)
-                current = part
-            else:
-                current = joined
-
-        for s in snes:
-            logger.debug(f"@@@ Queueing sentence: {s}")
-            self.tts_queue.put(s)
-            self.tts_queue.put("<EOS>")
+        # sentence = re.sub(r"\*.*?\*|\(.*?\)", "", sentence)
+        # sentence = sentence.replace("\n\n", ". ").replace("\n", ". ").replace("  ", " ").replace(":", " ")
+        #
+        # #GPT partition
+        # parts = re.split(r'(?<=[.!?;:])', sentence)  # Split at sentence-ending punctuation, keeping the delimiter
+        # # remove sentences that include only punctuation or whitespace
+        # parts = [part.strip() for part in parts if part.strip() and not re.match(r'^[\s\W]+$', part)]
+        #
+        # CHUNK_SIZE_SPOKEN_TEXT = 125
+        # snes = []
+        # current = ""
+        # for part in parts:
+        #     print(f"adding parts {current} {snes}")
+        #     joined = current.join(" " + part)
+        #     if len(joined) > CHUNK_SIZE_SPOKEN_TEXT:
+        #         snes.append(current)
+        #         current = part
+        #     else:
+        #         current = joined
+        # if len(current)>0:
+        #     snes.append(current)
+        #
+        # for s in snes:
+        #     logger.debug(f"@@@ Queueing sentence: {s}")
+        #     self.tts_queue.put(s)
+        #     self.tts_queue.put("<EOS>")
 
     def _clean_raw_bytes(self, line: bytes) -> dict[str, Any] | None:
         """
@@ -835,6 +887,14 @@ class Glados:
 
             except queue.Empty:
                 pass
+            except Exception as ex:
+                logger.exception(f"Error processing audio message. {ex}")
+                self.currently_speaking.clear()
+                logger.debug("Speaking event cleared")
+                # Clear remaining audio queue
+                with self.audio_queue.mutex:
+                    self.audio_queue.queue.clear()
+                self.force_interrupt = False
 
 
     def _speak_or_log_audio_message(self, message: AudioMessage) -> None:

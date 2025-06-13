@@ -113,6 +113,7 @@ class Typewriter(Static):
             if not self._vertical_scroll.is_vertical_scroll_end:
                 self._vertical_scroll.scroll_down()
             self._static.update(next(self._iter_text))
+
         except StopIteration:
             if self._repeat:
                 self._iter_text = self._get_iterator()
@@ -143,7 +144,8 @@ class SplashScreen(Screen[None]):
         with Container(id="splash_logo_container"):
             yield Static(self.SPLASH_ANSI, id="splash_logo")
             yield Label(aperture, id="banner")
-        yield Typewriter(login_text, id="login_text", speed=0.0075)
+        #yield Typewriter(login_text, id="login_text", speed=0.0075)
+        yield Static(login_text, id="login_text")
 
     def on_mount(self) -> None:
         """
@@ -259,8 +261,9 @@ class GladosUI(App[None]):
             with Horizontal():
                 yield (Printer(id="log_area"))
                 with Container(id="utility_area"):
-                    typewriter = Typewriter(recipe, id="recipe", speed=0.01, repeat=True)
-                    yield typewriter
+                    #typewriter = Typewriter(recipe, id="recipe", speed=0.01, repeat=True)
+                    #yield typewriter
+                    yield Static(recipe, id="recipe")
 
         yield Footer()
 

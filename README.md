@@ -216,7 +216,7 @@ To use these new settings, use the command:
 ## Common Issues
 1. If you find you are getting stuck in loops, as GLaDOS is hearing herself speak, you have two options:
    1. Solve this by upgrading your hardware. You need to you either headphone, so she can't physically hear herself speak, or a conference-style room microphone/speaker. These have hardware sound cancellation, and prevent these loops.
-   2. Disable voice interruption. This means neither you nor GLaDOS can interrupt when GLaDOS is speaking. To accomplish this, edit the `glados_config.yaml`, and change `interruptible:` to  `false`.
+   2. Disable voice çinterruption. This means neither you nor GLaDOS can interrupt when GLaDOS is speaking. To accomplish this, edit the `glados_config.yaml`, and change `interruptible:` to  `false`.
 2. If you want to the the Text UI, you should use the glados-ui.py file instead of glado.py
 
 
