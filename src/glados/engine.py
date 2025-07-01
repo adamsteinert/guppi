@@ -16,6 +16,7 @@ from numpy.typing import NDArray
 import sounddevice as sd  # type: ignore
 from sounddevice import CallbackFlags
 
+from CommandProcessor import CommandProcessor
 from Extensions.llm.LanguageAgent import GeminiAgent, MCPClient, OllamaToolManager
 from Extensions.Commands.command_manager import CommandManager
 from ASR import VAD, AudioTranscriber
@@ -128,8 +129,9 @@ class Glados:
 
         self.currently_speaking = threading.Event()
         self.shutdown_event = threading.Event()
+        self.command_processor = CommandProcessor(self)
 
-        llm_thread = threading.Thread(target=lambda: asyncio.run(self.process_llm()))
+        llm_thread = threading.Thread(target=lambda: asyncio.run(self.command_processor.process_llm()))
         llm_thread.start()
 
         tts_thread = threading.Thread(target=self.process_tts_thread)
@@ -548,125 +550,6 @@ class Glados:
 
         percentage_played = min(int(progress / total_samples * 100), 100)
         return interrupted, percentage_played
-
-
-    async def process_item(self, agent:GeminiAgent, queryContext: LlmContext) -> str:
-        import random
-        """Async function that processes an item (simulates some work)"""
-        # Simulate some async work
-        #await asyncio.sleep(random.uniform(0.5, 2.0))
-        # return f"Processed: {item}"
-        task = asyncio.create_task(agent.get_response(queryContext.text))
-        while True:
-            await asyncio.sleep(0.25)
-            if task.done():
-                break
-
-        return task.result()
-
-    def completion_callback(self, task: asyncio.Task, original_item: LlmContext):
-        """Callback function that runs when a task completes"""
-        try:
-            result = task.result()
-            logger.debug(f"Callback: Original item '{original_item}' -> {result}")
-            self.process_llm_response_stream(result)
-        except Exception as e:
-            logger.error(f"Callback: Task failed for '{original_item}': {e}")
-
-
-    async def process_llm(self) -> None:
-        """
-        Process text through the Language Model (LLM) and generate conversational responses.
-
-        This method runs in a continuous loop, retrieving detected text from a queue and sending it to an LLM server.
-        It streams the response, processes each chunk, and sends processed sentences to the text-to-speech (TTS) queue.
-
-        Key Behaviors:
-        - Continuously polls the LLM queue for detected text
-        - Sends text to LLM server with streaming enabled
-        - Processes response chunks in real-time
-        - Breaks sentences at punctuation marks
-        - Handles interruptions and processing flags
-        - Adds end-of-stream token to TTS queue after processing
-
-        Exceptions:
-        - Handles empty queue timeouts
-        - Catches and logs errors during line processing
-        - Stops processing if shutdown event is set or processing flag is False
-
-        Side Effects:
-
-
-        - Puts processed sentences into `self.tts_queue`
-        - Logs debug and error information
-
-        Note:
-        - Uses a timeout mechanism to prevent blocking
-        - Supports graceful interruption of LLM processing
-        """
-
-        agent = GeminiAgent(OllamaToolManager())
-        server_params = StdioServerParameters(
-            command="uv",
-            args=["--directory", "/Users/adams/source/production/mcp-guppi", "run", "mcp-guppi"],
-            env={"PROJECTS_FILE": "/Users/adams/source/production/mcp-guppi/data/projects.md"}
-        )
-
-        async with MCPClient(server_params) as mcpclient:
-            _ ,tools_list = await mcpclient.get_available_tools()
-            for tool in tools_list:
-                agent.tool_manager.register_tool(
-                    name=tool.name,
-                    function=mcpclient.call_tool, # Passing the function reference here
-                    description=tool.description,
-                    inputSchema=tool.inputSchema
-                )
-
-            while not self.shutdown_event.is_set():
-                try:
-
-
-                    # Service calls async with tasks and a follow-up queue
-                    # https://docs.python.org/3/library/asyncio-task.html
-                    # e.g. get task, associate it with an id. Wait in loop with 500ms pauses
-                    # while allowing new queue items to flow in during processing.
-                    # if a task takes more than 2 seconds, give a processing response message to guppi
-                    # on completion of a task, run speaking loop and response streaming.
-                    if not self.llm_queue.empty():
-                        queryContext = self.llm_queue.get_nowait()# .get(timeout=0.1)
-                        task = asyncio.create_task(self.process_item(agent, queryContext))
-                        logger.debug("creating task and callback for item: %s", queryContext)
-                        from functools import partial
-                        callback = partial(self.completion_callback, original_item=queryContext)
-                        task.add_done_callback(callback)
-                        await asyncio.sleep(0.25)
-                    else:
-                        await asyncio.sleep(0.25)
-                    #result = await agent.get_response(queryContext.text)
-                    #self.currently_speaking.set()
-                    #self.process_llm_response_stream(result)
-
-                except queue.Empty:
-                    await asyncio.sleep(0.25)  # Pause briefly to avoid busy-waiting
-                    #time.sleep(self.PAUSE_TIME)
-
-    # async def handle_agent_calls_async(self, detected_text: str):
-    #     #if not self.langagent.is_ready():
-    #     #    return "The lan#guage agent is not ready yet. It appears configure() was never called."
-    #
-    #     logger.debug(f"HAC Detected text: {detected_text}")
-    #
-    #     logger.debug(f"HAC Got response: {detected_text}")
-    #     self.process_llm_response_stream(response)
-    #     # logger.debug(f"HAC Response: {response}")
-    #     # return response
-
-    def process_llm_response_stream(self, detected_text):
-        # sentence = [detected_text]
-
-        #if self.processing and detected_text:
-        if detected_text:
-            self._process_sentence(detected_text)
 
 
     def _process_sentence(self, current_sentence: list[str]) -> None:
