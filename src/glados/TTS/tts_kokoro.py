@@ -1,5 +1,7 @@
 from pathlib import Path
-
+import soundfile as sf
+from pydub import AudioSegment
+import os
 import numpy as np
 from numpy.typing import NDArray
 import onnxruntime as ort  # type: ignore
@@ -68,6 +70,30 @@ class Synthesizer:
         ids = self._phonemes_to_ids(phonemes[0])
         audio = self._synthesize_ids_to_audio(ids, voice)
         return np.array(audio, dtype=np.float32)
+
+    def generate_speech_file(self, text: str, output_path: str, voice: str | None = None) -> None:
+        """
+        Generate speech audio from text and save it as an MP3 file.
+
+        Parameters:
+            text (str): The text to be converted to speech.
+            output_path (str): The path to save the MP3 file.
+            voice (str | None): The voice to use for synthesis. Defaults to the instance's voice.
+        """
+        output_path = Path(output_path)
+        audio_data = self.generate_speech_audio(text, voice)
+        print(f"output path: {output_path}")
+        temp_wav_path = str(output_path).replace(".mp3", ".wav")
+
+        # Save the audio data as a temporary WAV file
+        sf.write(temp_wav_path, audio_data, self.sample_rate, format="WAV")
+
+        # Convert the WAV file to MP3
+        audio = AudioSegment.from_wav(temp_wav_path)
+        audio.export(output_path, format="mp3")
+
+        # Delete the temporary WAV file
+        os.remove(temp_wav_path)
 
     @staticmethod
     def _get_vocab() -> dict[str, int]:

@@ -9,9 +9,11 @@ import sounddevice as sd  # type: ignore
 from engine import Glados
 from glados_config import GladosConfig
 from TTS import tts_glados
+from TTS import tts_kokoro
 from utils import spoken_text_converter as stc
 
 DEFAULT_CONFIG = Path("configs/glados_config.yaml")
+DEFAULT_OUT_FILE = Path("~/temp.wav")
 
 MODEL_CHECKSUMS = {
     "models/ASR/nemo-parakeet_tdt_ctc_110m.onnx": "313705ff6f897696ddbe0d92b5ffadad7429a47d2ddeef370e6f59248b1e8fb5",
@@ -216,6 +218,32 @@ def say(text: str, config_path: str | Path = "glados_config.yaml") -> None:
     sd.play(audio, glados_tts.sample_rate)
     sd.wait()
 
+def say_to_file(text: str, path:str, config_path: str | Path = "glados_config.yaml") -> str:
+    """
+    Converts text to speech using the GLaDOS text-to-speech system and plays the generated audio.
+
+    Parameters:
+        text (str): The text to be spoken by the GLaDOS voice assistant.
+        config_path (str | Path, optional): Path to the configuration YAML file.
+            Defaults to "glados_config.yaml".
+
+    Notes:
+        - Uses a text-to-speech synthesizer to generate audio
+        - Converts input text to a spoken format before synthesis
+        - Plays the generated audio using the system's default sound device
+        - Blocks execution until audio playback is complete
+
+    Example:
+        say("Hello, world!")  # Speaks the text using GLaDOS voice
+    """
+    glados_config = GladosConfig.from_yaml(str(config_path))
+    converter = stc.SpokenTextConverter()
+    converted_text = converter.text_to_spoken(text)
+    # Generate the audio to from the text
+    print(f"Converting {text} to {path} with voice {glados_config.voice}")
+    kokoro_tts = tts_kokoro.Synthesizer()
+    kokoro_tts.generate_speech_file(converted_text, path, glados_config.voice)
+    return path
 
 def start(config_path: str | Path = "glados_config.yaml") -> None:
     """
@@ -316,6 +344,7 @@ def main() -> None:
 
     # Say command
     say_parser = subparsers.add_parser("say", help="Make GLaDOS speak text")
+    say_parser = subparsers.add_parser("saytofile", help="Save GLaDOS speech to text")
     say_parser.add_argument("text", type=str, help="Text for GLaDOS to speak")
     say_parser.add_argument(
         "--config",
@@ -323,7 +352,12 @@ def main() -> None:
         default=DEFAULT_CONFIG,
         help=f"Path to configuration file (default: {DEFAULT_CONFIG})",
     )
-
+    say_parser.add_argument(
+        "--outfile",
+        type=str,
+        default=DEFAULT_OUT_FILE,
+        help=f"Path to save the audio file for saytofile command (default: {DEFAULT_OUT_FILE})",
+    )
     args = parser.parse_args()
 
     if args.command == "download":
@@ -333,6 +367,9 @@ def main() -> None:
             return
         if args.command == "say":
             say(args.text, args.config)
+        if args.command == "saytofile":
+            print(f"Saving audio to {args.outfile}")
+            say_to_file(args.text, args.outfile, args.config)
         elif args.command == "start":
             start(args.config)
         elif args.command == "tui":

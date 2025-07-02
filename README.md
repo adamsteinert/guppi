@@ -1,5 +1,11 @@
 <a href="https://trendshift.io/repositories/9828" target="_blank"><img src="https://trendshift.io/api/badge/repositories/9828" alt="dnhkng%2FGlaDOS | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
+```
+python ./src/glados/cli.py saytofile "well, this is more appropriate. Did it seem to take a long time to generate this?"  --config configs/dev_config.yaml && afplay temp.mp3
+
+```
+
+
 # GLaDOS Personality Core
 This is a project dedicated to building a real-life version of GLaDOS!
 
