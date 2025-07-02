@@ -1,7 +1,7 @@
 """GLaDOS - Voice Assistant using ONNX models for speech synthesis and recognition."""
 import asyncio
-import engine
-#from .engine import Glados, GladosConfig
+#import engine
+from .engine import Glados, GladosConfig
 
 def main():
     """Main entry point for the package."""

@@ -3,9 +3,9 @@ import asyncio
 from functools import partial
 from queue import Empty
 from loguru import logger
-from Extensions.llm.LanguageAgent import GeminiAgent, MCPClient, OllamaToolManager
+from .Extensions.llm.LanguageAgent import GeminiAgent, MCPClient, OllamaToolManager
 from mcp import StdioServerParameters
-from llm_context import LlmContext
+from .llm_context import LlmContext
 
 class CommandProcessor:
     def __init__(self, glados: "Glados"):

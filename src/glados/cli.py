@@ -6,10 +6,10 @@ from pathlib import Path
 import requests
 import sounddevice as sd  # type: ignore
 
-from engine import Glados
-from glados_config import GladosConfig
-from TTS import tts_glados
-from utils import spoken_text_converter as stc
+from .engine import Glados
+from .glados_config import GladosConfig
+from .TTS import tts_glados
+from .utils import spoken_text_converter as stc
 
 DEFAULT_CONFIG = Path("configs/glados_config.yaml")
 

@@ -16,15 +16,15 @@ from numpy.typing import NDArray
 import sounddevice as sd  # type: ignore
 from sounddevice import CallbackFlags
 
-from CommandProcessor import CommandProcessor
-from Extensions.llm.LanguageAgent import GeminiAgent, MCPClient, OllamaToolManager
-from Extensions.Commands.command_manager import CommandManager
-from ASR import VAD, AudioTranscriber
-from TTS import tts_glados, tts_kokoro
-from audio_message import AudioMessage
-from glados_config import GladosConfig
-from llm_context import LlmContext
-from utils import spoken_text_converter as stc
+from .CommandProcessor import CommandProcessor
+from .Extensions.llm.LanguageAgent import GeminiAgent, MCPClient, OllamaToolManager
+from .Extensions.Commands.command_manager import CommandManager
+from .ASR import VAD, AudioTranscriber
+from .TTS import tts_glados, tts_kokoro
+from .audio_message import AudioMessage
+from .glados_config import GladosConfig
+from .llm_context import LlmContext
+from .utils import spoken_text_converter as stc
 
 # Set up logger to outputto stderr with DEBUG level
 logger.remove()

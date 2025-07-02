@@ -3,7 +3,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, HttpUrl
 
-from personality_prompt import PersonalityPrompt
+from .personality_prompt import PersonalityPrompt
 
 
 class GladosConfig(BaseModel):
