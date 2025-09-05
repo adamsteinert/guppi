@@ -13,9 +13,9 @@ from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Digits, Footer, Header, Label, Log, RichLog, Static
 
-from glados.engine import Glados
-from glados_config import GladosConfig
-from glados.glados_ui.text_resources import aperture, help_text, login_text, recipe
+from .engine import Glados
+from .glados_config import GladosConfig
+from .glados_ui.text_resources import aperture, help_text, login_text, recipe
 
 # Custom Widgets
 
