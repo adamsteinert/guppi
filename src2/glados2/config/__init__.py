@@ -1,0 +1,1 @@
+"""Configuration management for GLaDOS 2.0."""
