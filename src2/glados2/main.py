@@ -10,7 +10,7 @@ from loguru import logger
 from .core.event_bus import EventBus, EventType
 from .core.state_manager import StateManager, AppState
 from .audio.audio_manager import AudioManager
-from .llm.llm_manager import LLMManager
+from .llm.llm_manager import LLMManager, LLMProvider
 from .config.config_manager import ConfigManager, GladosConfig
 from .ui.app import GladosUI
 
@@ -41,9 +41,32 @@ class GladosApp:
         self._state_manager = StateManager(self._event_bus)
         
         # Managers
-        self._audio_manager = AudioManager(self._event_bus, self._state_manager)
+        audio_config = {
+            'sample_rate': self._config.audio.sample_rate,
+            'chunk_size': 1024,
+            'microphone_muted': self._config.audio.microphone_muted,
+            'speaker_muted': self._config.audio.speaker_muted,
+            'volume': self._config.audio.volume,
+            'vad_threshold': self._config.audio.vad_threshold,
+            'min_speech_duration_ms': 250,
+            'min_silence_duration_ms': self._config.audio.pause_limit_ms,
+            'voice': self._config.tts.voice,
+            'tts_sample_rate': 22050,
+        }
+        self._audio_manager = AudioManager(self._event_bus, self._state_manager, audio_config)
         self._llm_manager = LLMManager(self._event_bus, self._state_manager)
-        
+
+        # Configure LLM manager from config
+        self._llm_manager.configure_provider(
+            LLMProvider[self._config.llm.provider.upper()],
+            model=self._config.llm.model,
+            completion_url=self._config.llm.completion_url,
+            api_key=self._config.llm.api_key,
+            temperature=self._config.llm.temperature,
+            max_tokens=self._config.llm.max_tokens
+        )
+        self._llm_manager.set_system_prompt(self._config.llm.system_prompt)
+
         # UI (optional - can run headless)
         self._ui: Optional[GladosUI] = None
         
@@ -59,6 +82,8 @@ class GladosApp:
             self._ui = GladosUI()
             self._ui._event_bus = self._event_bus
             self._ui._state_manager = self._state_manager
+            self._ui._audio_manager = self._audio_manager
+            self._ui._llm_manager = self._llm_manager
             
             # Run the UI
             self._ui.run()

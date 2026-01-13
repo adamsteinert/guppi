@@ -18,6 +18,7 @@ dependencies = [
     "mcp>=1.10.1",
     "openai>=1.93.0",
     "pydub>=0.25.1",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -28,12 +29,16 @@ dev = ["pytest", "ruff", "ipykernel", "types-requests", "types-PyYAML"]
 
 [project.scripts]
 glados = "glados.cli:main"
+glados2 = "glados2.main:main"
 
 
 # Build system
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatchling.build.targets.wheel]
+packages = ["src/glados", "src2/glados2"]
 
 # Ruff configuration
 [tool.ruff]

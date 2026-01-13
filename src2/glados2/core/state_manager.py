@@ -131,6 +131,10 @@ class StateManager:
             AppState.ERROR: [
                 AppState.IDLE,  # Recovery
                 AppState.INITIALIZING,  # Restart
+                AppState.LISTENING,  # Direct recovery to listening
+                AppState.PROCESSING_AUDIO,  # Allow continuing audio processing
+                AppState.CALLING_LLM,  # Allow continuing LLM calls
+                AppState.GENERATING_TTS,  # Allow continuing TTS
             ]
         }
         

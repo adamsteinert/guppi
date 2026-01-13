@@ -3,9 +3,32 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Any, Optional
+import os
+import re
 import yaml
 
+from dotenv import load_dotenv
 from loguru import logger
+
+
+def _substitute_env_vars(value: Any) -> Any:
+    """Recursively substitute ${VAR} patterns with environment variables."""
+    if isinstance(value, str):
+        # Match ${VAR_NAME} pattern
+        pattern = r'\$\{([^}]+)\}'
+        matches = re.findall(pattern, value)
+        for var_name in matches:
+            env_value = os.getenv(var_name)
+            if env_value is not None:
+                value = value.replace(f'${{{var_name}}}', env_value)
+            else:
+                logger.warning(f"Environment variable {var_name} not found")
+        return value
+    elif isinstance(value, dict):
+        return {k: _substitute_env_vars(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [_substitute_env_vars(item) for item in value]
+    return value
 
 
 @dataclass
@@ -70,18 +93,27 @@ class GladosConfig:
     def from_yaml(cls, config_path: str | Path) -> "GladosConfig":
         """Load configuration from YAML file."""
         config_path = Path(config_path)
-        
+
         if not config_path.exists():
             logger.warning(f"Config file not found: {config_path}, using defaults")
             return cls()
-            
+
+        # Load .env file from project root
+        dotenv_path = Path.cwd() / '.env'
+        if dotenv_path.exists():
+            load_dotenv(dotenv_path)
+            logger.debug(f"Loaded environment variables from {dotenv_path}")
+
         try:
             with open(config_path, 'r') as f:
                 data = yaml.safe_load(f) or {}
-                
+
+            # Substitute environment variables
+            data = _substitute_env_vars(data)
+
             logger.info(f"Loaded configuration from {config_path}")
             return cls.from_dict(data)
-            
+
         except Exception as e:
             logger.error(f"Error loading config from {config_path}: {e}")
             logger.info("Using default configuration")

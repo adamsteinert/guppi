@@ -154,9 +154,13 @@ class GladosUI(App[None]):
     def __init__(self):
         super().__init__()
         self._event_bus = EventBus()
-        self._state_manager = StateManager()
+        self._state_manager = StateManager(self._event_bus)
         self._conversation_log: Optional[ConversationLog] = None
         self._status_display: Optional[StatusDisplay] = None
+        
+        # Managers will be injected by main app
+        self._audio_manager = None
+        self._llm_manager = None
         
         # Register for events
         self._event_bus.subscribe(EventType.STATE_CHANGED, self._on_state_changed)
