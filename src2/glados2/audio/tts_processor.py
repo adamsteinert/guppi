@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 import tempfile
 import os
+from pickle import load
 
 from loguru import logger
 
@@ -21,6 +22,17 @@ try:
 except ImportError:
     logger.warning("soundfile not available")
     sf = None
+
+# Import the phonemizer from the original GLaDOS implementation
+try:
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
+    from glados.TTS.phonemizer import Phonemizer
+    PHONEMIZER_AVAILABLE = True
+except ImportError:
+    logger.warning("GLaDOS phonemizer not available - will use character encoding fallback")
+    PHONEMIZER_AVAILABLE = False
+    Phonemizer = None
 
 
 class TTSProcessor:
@@ -42,12 +54,21 @@ class TTSProcessor:
         self.sample_rate = sample_rate
         self._lock = threading.Lock()
         self._cancelled = threading.Event()
-        
+
         # Model sessions
         self.glados_session: Optional[ort.InferenceSession] = None
         self.kokoro_session: Optional[ort.InferenceSession] = None
         self.phonemizer_session: Optional[ort.InferenceSession] = None
-        
+
+        # GLaDOS specific components
+        self.phonemizer = None  # Phonemizer instance if available
+        self.phoneme_to_id: Optional[dict] = None
+
+        # GLaDOS constants
+        self.PAD = "_"
+        self.BOS = "^"
+        self.EOS = "$"
+
         # Load models
         self._load_models()
         
@@ -56,7 +77,7 @@ class TTSProcessor:
         if not ort:
             logger.warning("ONNX Runtime not available, using fallback TTS")
             return
-            
+
         # Load GLaDOS model
         glados_path = self.model_dir / "glados.onnx"
         if glados_path.exists():
@@ -66,9 +87,37 @@ class TTSProcessor:
                     providers=['CPUExecutionProvider']
                 )
                 logger.info(f"Loaded GLaDOS TTS model from {glados_path}")
+
+                # Load GLaDOS phonemizer and phoneme mapping
+                if PHONEMIZER_AVAILABLE and Phonemizer is not None:
+                    try:
+                        self.phonemizer = Phonemizer()
+                        logger.info("Loaded GLaDOS phonemizer")
+                    except Exception as e:
+                        logger.warning(f"Failed to load phonemizer: {e}")
+
+                # Load phoneme-to-ID mapping
+                phoneme_to_id_path = self.model_dir / "phoneme_to_id.pkl"
+                if phoneme_to_id_path.exists():
+                    try:
+                        with open(phoneme_to_id_path, "rb") as f:
+                            self.phoneme_to_id = dict(load(f))
+                        logger.info(f"Loaded phoneme-to-ID mapping from {phoneme_to_id_path}")
+                        logger.debug(f"Phoneme mapping has {len(self.phoneme_to_id)} entries")
+                        # Check for required markers
+                        for marker in [self.BOS, self.EOS, self.PAD]:
+                            if marker in self.phoneme_to_id:
+                                logger.debug(f"Marker '{marker}' -> {self.phoneme_to_id[marker]}")
+                            else:
+                                logger.warning(f"Missing marker '{marker}' in phoneme_to_id")
+                    except Exception as e:
+                        logger.warning(f"Failed to load phoneme_to_id.pkl: {e}")
+                else:
+                    logger.warning(f"phoneme_to_id.pkl not found at {phoneme_to_id_path}")
+
             except Exception as e:
                 logger.error(f"Failed to load GLaDOS model: {e}")
-                
+
         # Load Kokoro model
         kokoro_path = self.model_dir / "kokoro-v1.0.fp16.onnx"
         if kokoro_path.exists():
@@ -80,8 +129,8 @@ class TTSProcessor:
                 logger.info(f"Loaded Kokoro TTS model from {kokoro_path}")
             except Exception as e:
                 logger.error(f"Failed to load Kokoro model: {e}")
-                
-        # Load Phonemizer model
+
+        # Load Phonemizer model (for Kokoro)
         phonemizer_path = self.model_dir / "phomenizer_en.onnx"
         if phonemizer_path.exists():
             try:
@@ -185,6 +234,7 @@ class TTSProcessor:
                 return None
 
             # Extract audio from outputs
+            logger.debug(f"GLaDOS output shape: {outputs[0].shape}")
             audio_data = self._extract_audio_glados(outputs)
             logger.debug(f"GLaDOS synthesis completed: {len(audio_data)} samples")
             return audio_data
@@ -282,17 +332,62 @@ class TTSProcessor:
     def _preprocess_text_glados(self, text: str) -> np.ndarray:
         """Preprocess text for GLaDOS model.
 
-        This is a simplified implementation. Ideally, this should:
+        Converts text to phoneme IDs using the GLaDOS phonemizer.
+
+        Steps:
         1. Convert text to phonemes using phonemizer
         2. Map phonemes to IDs using phoneme_to_id mapping
         3. Add BOS/EOS markers and padding
-
-        For now, we use a simple character encoding as fallback.
         """
-        # Simple character-based encoding as fallback
-        # In production, use proper phoneme conversion
+        # Try to use proper phonemizer if available
+        if self.phonemizer and self.phoneme_to_id:
+            try:
+                # Convert text to phonemes
+                phoneme_list = self.phonemizer.convert_to_phonemes([text], "en_us")
+                if phoneme_list:
+                    phonemes = phoneme_list[0]
+                    logger.debug(f"Phonemes: {phonemes[:100]}...")  # Debug
+                    # Convert phonemes to IDs
+                    ids = self._phonemes_to_ids(phonemes)
+                    logger.debug(f"Phoneme IDs count: {len(ids)}, first 10: {ids[:10]}")  # Debug
+                    if len(ids) > 0:
+                        return np.array(ids, dtype=np.int64)
+                    else:
+                        logger.warning("Phoneme-to-ID conversion produced empty result")
+            except Exception as e:
+                logger.warning(f"Phonemizer failed: {e}, falling back to character encoding")
+                import traceback
+                logger.debug(traceback.format_exc())
+
+        # Fallback: Simple character-based encoding
+        logger.debug("Using character encoding fallback for GLaDOS")
         encoded = np.array([ord(c) % 256 for c in text[:200]], dtype=np.int64)
         return encoded  # Return 1D array, batch dimension added in _glados_synthesize
+
+    def _phonemes_to_ids(self, phonemes: str) -> list[int]:
+        """
+        Convert phonemes to phoneme IDs.
+
+        This follows the GLaDOS model's expected format:
+        - Start with BOS (beginning of sentence) marker
+        - Add each phoneme's ID followed by padding
+        - End with EOS (end of sentence) marker
+        """
+        if not self.phoneme_to_id:
+            return []
+
+        ids: list[int] = list(self.phoneme_to_id.get(self.BOS, [0]))
+
+        for phoneme in phonemes:
+            if phoneme not in self.phoneme_to_id:
+                continue
+
+            ids.extend(self.phoneme_to_id[phoneme])
+            ids.extend(self.phoneme_to_id.get(self.PAD, [0]))
+
+        ids.extend(self.phoneme_to_id.get(self.EOS, [0]))
+
+        return ids
         
     def _preprocess_text_kokoro(self, text: str, voice: str) -> np.ndarray:
         """Preprocess text for Kokoro model."""
@@ -318,9 +413,9 @@ class TTSProcessor:
         
     def _extract_audio_glados(self, outputs) -> np.ndarray:
         """Extract audio data from GLaDOS model outputs."""
-        # GLaDOS model outputs audio with shape [batch, 1, samples]
-        # Squeeze to remove batch and channel dimensions
-        audio_tensor = outputs[0].squeeze((0, 1))
+        # GLaDOS model outputs audio with shape [batch, 1, 1, samples]
+        # Squeeze to remove all dimensions except the last one (samples)
+        audio_tensor = outputs[0].squeeze()
         return audio_tensor.astype(np.float32)
         
     def _extract_audio_kokoro(self, outputs) -> np.ndarray:
