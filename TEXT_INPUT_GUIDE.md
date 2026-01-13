@@ -17,6 +17,7 @@ All control commands now use **Cmd+** (Command key) combinations to avoid confli
 - **Cmd+Q** - Quit application
 - **Cmd+H** - Show help screen
 - **Cmd+I** - Interrupt current response
+- **Cmd+T** - Toggle debug view
 
 ### Voice Controls
 - **Cmd+L** - Start/Stop voice listening mode
@@ -56,6 +57,24 @@ The right panel shows real-time status:
 - **LLM**: Connection status to Gemini
 - **Status**: Current application state
 
+## Debug View
+
+Press **Cmd+T** to toggle between conversation view and debug view:
+- **Conversation View** (default): Shows your chat with GLaDOS
+- **Debug View**: Shows real-time event logging including:
+  - State changes (INITIALIZING → IDLE → LISTENING, etc.)
+  - Message events (user input, LLM responses)
+  - Audio status changes (listening, processing, speaking)
+  - LLM response chunks (streaming text)
+  - Service initialization events
+  - User actions (keyboard shortcuts, button clicks)
+
+The debug view is useful for:
+- Troubleshooting issues
+- Understanding the event flow
+- Monitoring LLM streaming responses
+- Tracking audio pipeline state
+
 ## Tips
 
 1. **Text is Default**: No need to enable anything - just start typing
@@ -63,6 +82,7 @@ The right panel shows real-time status:
 3. **Safe Interruption**: Use `Cmd+I` to stop long responses
 4. **Voice Optional**: Voice features are completely optional
 5. **Conversation Flow**: Both text and voice messages appear in the same conversation log
+6. **Debug Mode**: Press `Cmd+T` to see what's happening under the hood
 
 ## Running the Application
 

@@ -73,6 +73,7 @@ class HelpScreen(ModalScreen[None]):
 • [bold]Cmd+I[/bold] - Interrupt current response
 • [bold]Cmd+Q[/bold] - Quit application
 • [bold]Cmd+H[/bold] - Show this help
+• [bold]Cmd+T[/bold] - Toggle debug view
 
 [yellow]Audio Controls:[/yellow]
 • [bold]Cmd+M[/bold] - Toggle microphone mute
@@ -116,6 +117,7 @@ class GladosUI(App[None]):
         Binding("cmd+i", "interrupt", "Interrupt"),
         Binding("cmd+m", "toggle_microphone", "Mic"),
         Binding("cmd+s", "toggle_speaker", "Speaker"),
+        Binding("cmd+t", "toggle_debug", "Debug"),
     ]
     
     CSS = """
@@ -132,6 +134,11 @@ class GladosUI(App[None]):
 
     #conversation_log {
         height: 1fr;
+    }
+
+    #debug_log {
+        height: 1fr;
+        display: none;
     }
 
     #input_container {
@@ -172,13 +179,16 @@ class GladosUI(App[None]):
         self._event_bus = EventBus()
         self._state_manager = StateManager(self._event_bus)
         self._conversation_log: Optional[ConversationLog] = None
+        self._debug_log: Optional[RichLog] = None
         self._status_display: Optional[StatusDisplay] = None
         self._message_input: Optional[Input] = None
+        self._show_debug = False
+        self._logger_sink_id = None
 
         # Managers will be injected by main app
         self._audio_manager = None
         self._llm_manager = None
-        
+
         # Register for events
         self._event_bus.subscribe(EventType.STATE_CHANGED, self._on_state_changed)
         self._event_bus.subscribe(EventType.MESSAGE_RECEIVED, self._on_message_received)
@@ -193,6 +203,10 @@ class GladosUI(App[None]):
             with Vertical(id="conversation_area"):
                 self._conversation_log = ConversationLog(id="conversation_log")
                 yield self._conversation_log
+
+                # Debug log (hidden by default)
+                self._debug_log = RichLog(id="debug_log", wrap=True, markup=True)
+                yield self._debug_log
 
                 # Text input at bottom
                 with Container(id="input_container"):
@@ -214,8 +228,26 @@ class GladosUI(App[None]):
 
         yield Footer()
         
+    def _logger_sink(self, message: str) -> None:
+        """Custom logger sink that writes to the debug log widget."""
+        if self._debug_log:
+            # Strip ANSI codes and write to debug log
+            # Loguru includes formatting, we'll write it as-is
+            self.call_from_thread(self._debug_log.write, message.rstrip())
+
     def on_mount(self) -> None:
         """Initialize the application after mounting."""
+        # Remove default logger handlers to prevent terminal output
+        #logger.remove()
+
+        # Add custom logger sink to capture log output (only to debug widget)
+        self._logger_sink_id = logger.add(
+            self._logger_sink,
+            format="<level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
+            colorize=True,
+            level="DEBUG"
+        )
+
         logger.info("GLaDOS 2.0 UI starting...")
 
         # Initialize state
@@ -231,27 +263,40 @@ class GladosUI(App[None]):
     def _initialize_services(self) -> None:
         """Initialize background services."""
         logger.info("Initializing services...")
-        
+
         # TODO: Initialize audio, LLM, and other services
         # For now, just simulate successful initialization
         self._state_manager.set_state(AppState.IDLE)
-        
+
         if self._conversation_log:
             self._conversation_log.add_message("system", "GLaDOS 2.0 initialized successfully")
+
+        logger.info("All services initialized successfully")
             
     def _on_state_changed(self, event_data: dict) -> None:
         """Handle state changes from the state manager."""
         new_state = event_data.get("new_state")
+        old_state = event_data.get("old_state")
         if self._status_display and new_state:
             self._status_display.update_status(new_state.value)
+
+        # Log state transition
+        if old_state:
+            logger.debug(f"State transition: {old_state.value} → {new_state.value}")
+        else:
+            logger.debug(f"State set to: {new_state.value}")
             
     def _on_message_received(self, event_data: dict) -> None:
         """Handle new messages."""
         role = event_data.get("role", "unknown")
         content = event_data.get("content", "")
-        
+        source = event_data.get("source", "unknown")
+
         if self._conversation_log:
             self._conversation_log.add_message(role, content)
+
+        # Log message event
+        logger.debug(f"Message received: role={role}, source={source}, length={len(content)}")
             
     def _on_audio_status_changed(self, event_data: dict) -> None:
         """Handle audio status changes."""
@@ -265,6 +310,9 @@ class GladosUI(App[None]):
             audio_widget.update("Audio: [red]Speaking[/]")
         else:
             audio_widget.update("Audio: [green]Ready[/]")
+
+        # Log audio status change
+        logger.debug(f"Audio status changed to: {status}")
             
     def action_help(self) -> None:
         """Show help screen."""
@@ -273,15 +321,15 @@ class GladosUI(App[None]):
     def action_toggle_listening(self) -> None:
         """Toggle listening state."""
         current_state = self._state_manager.get_state()
-        
+
         if current_state == AppState.IDLE:
             self._state_manager.set_state(AppState.LISTENING)
             self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "listening"})
-            logger.info("Started listening...")
+            logger.info("Started listening")
         elif current_state == AppState.LISTENING:
-            self._state_manager.set_state(AppState.IDLE)  
+            self._state_manager.set_state(AppState.IDLE)
             self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "ready"})
-            logger.info("Stopped listening...")
+            logger.info("Stopped listening")
             
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle Enter key in input field."""
@@ -302,8 +350,8 @@ class GladosUI(App[None]):
                     "source": "text_input"
                 })
 
-                logger.info(f"User sent text message: {message}")
-            
+                logger.info(f"User text message: {message}")
+
     def action_interrupt(self) -> None:
         """Interrupt current operation."""
         logger.info("Interrupt requested")
@@ -330,9 +378,34 @@ class GladosUI(App[None]):
                 self._conversation_log.add_message("system", f"Speaker {status}")
         logger.info("Speaker toggle requested")
         
+    def action_toggle_debug(self) -> None:
+        """Toggle between conversation and debug view."""
+        self._show_debug = not self._show_debug
+
+        if self._show_debug:
+            # Show debug, hide conversation
+            if self._conversation_log:
+                self._conversation_log.styles.display = "none"
+            if self._debug_log:
+                self._debug_log.styles.display = "block"
+            logger.info("Switched to debug view")
+        else:
+            # Show conversation, hide debug
+            if self._conversation_log:
+                self._conversation_log.styles.display = "block"
+            if self._debug_log:
+                self._debug_log.styles.display = "none"
+            logger.info("Switched to conversation view")
+
     def action_quit(self) -> None:
         """Quit the application cleanly."""
         logger.info("Shutting down GLaDOS 2.0...")
+
+        # Remove the custom logger sink
+        if self._logger_sink_id is not None:
+            logger.remove(self._logger_sink_id)
+            self._logger_sink_id = None
+
         self._state_manager.set_state(AppState.SHUTTING_DOWN)
         self.exit()
 
