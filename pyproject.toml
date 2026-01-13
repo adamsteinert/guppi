@@ -40,6 +40,9 @@ build-backend = "hatchling.build"
 [tool.hatchling.build.targets.wheel]
 packages = ["src/glados", "src2/glados2"]
 
+[tool.hatchling.build]
+packages = ["src/glados", "src2/glados2"]
+
 # Ruff configuration
 [tool.ruff]
 # Same as Black
