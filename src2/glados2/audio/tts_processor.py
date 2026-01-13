@@ -127,39 +127,71 @@ class TTSProcessor:
             if self._cancelled.is_set():
                 logger.debug("Synthesis cancelled before starting")
                 return None
-                
+
             # Choose synthesis method based on voice and available models
             if voice == "glados" and self.glados_session:
-                return self._glados_synthesize(text)
+                result = self._glados_synthesize(text)
+                # Fall back if GLaDOS synthesis failed or produced too little audio
+                if result is None or len(result) < 100:
+                    if result is not None:
+                        logger.warning(f"GLaDOS synthesis produced only {len(result)} samples, using fallback")
+                    else:
+                        logger.warning("GLaDOS synthesis failed, using fallback")
+                    return self._fallback_synthesize(text, voice)
+                return result
             elif voice.startswith(("af_", "am_", "bf_", "bm_")) and self.kokoro_session:
-                return self._kokoro_synthesize(text, voice)
+                result = self._kokoro_synthesize(text, voice)
+                # Fall back if Kokoro synthesis failed
+                if result is None:
+                    logger.warning("Kokoro synthesis failed, using fallback")
+                    return self._fallback_synthesize(text, voice)
+                return result
             else:
                 return self._fallback_synthesize(text, voice)
                 
     def _glados_synthesize(self, text: str) -> Optional[np.ndarray]:
         """Synthesize using GLaDOS model."""
         try:
-            # Preprocess text for GLaDOS model
-            processed_text = self._preprocess_text_glados(text)
-            
+            # Preprocess text for GLaDOS model (convert to phoneme IDs)
+            phoneme_ids = self._preprocess_text_glados(text)
+
             if self._cancelled.is_set():
                 return None
-                
-            # Run GLaDOS TTS inference
-            input_name = self.glados_session.get_inputs()[0].name
-            inputs = {input_name: processed_text}
+
+            # Prepare required inputs for GLaDOS model
+            phoneme_ids_array = np.expand_dims(phoneme_ids, 0)  # Add batch dimension
+            phoneme_ids_lengths = np.array([phoneme_ids_array.shape[1]], dtype=np.int64)
+
+            # Scales: [noise_scale, length_scale, noise_w]
+            scales = np.array([0.667, 1.0, 0.8], dtype=np.float32)
+
+            # Speaker ID (None for single-speaker models)
+            sid = None
+
+            # Run GLaDOS TTS inference with all required inputs
+            inputs = {
+                "input": phoneme_ids_array,
+                "input_lengths": phoneme_ids_lengths,
+                "scales": scales,
+            }
+
+            # Only add sid if the model expects it
+            if len(self.glados_session.get_inputs()) > 3:
+                inputs["sid"] = np.array([0], dtype=np.int64) if sid is None else sid
+
             outputs = self.glados_session.run(None, inputs)
-            
+
             if self._cancelled.is_set():
                 return None
-                
+
             # Extract audio from outputs
             audio_data = self._extract_audio_glados(outputs)
             logger.debug(f"GLaDOS synthesis completed: {len(audio_data)} samples")
             return audio_data
-            
+
         except Exception as e:
             logger.error(f"GLaDOS synthesis error: {e}")
+            logger.debug(f"Error details: {type(e).__name__}: {str(e)}")
             return None
             
     def _kokoro_synthesize(self, text: str, voice: str) -> Optional[np.ndarray]:
@@ -248,11 +280,19 @@ class TTSProcessor:
         return audio_data
         
     def _preprocess_text_glados(self, text: str) -> np.ndarray:
-        """Preprocess text for GLaDOS model."""
-        # This is model-specific - adjust based on your GLaDOS model requirements
-        # For now, return a simple character-based encoding
-        encoded = np.array([ord(c) for c in text[:200]], dtype=np.int32)  # Limit length
-        return encoded.reshape(1, -1)  # Add batch dimension
+        """Preprocess text for GLaDOS model.
+
+        This is a simplified implementation. Ideally, this should:
+        1. Convert text to phonemes using phonemizer
+        2. Map phonemes to IDs using phoneme_to_id mapping
+        3. Add BOS/EOS markers and padding
+
+        For now, we use a simple character encoding as fallback.
+        """
+        # Simple character-based encoding as fallback
+        # In production, use proper phoneme conversion
+        encoded = np.array([ord(c) % 256 for c in text[:200]], dtype=np.int64)
+        return encoded  # Return 1D array, batch dimension added in _glados_synthesize
         
     def _preprocess_text_kokoro(self, text: str, voice: str) -> np.ndarray:
         """Preprocess text for Kokoro model."""
@@ -278,9 +318,10 @@ class TTSProcessor:
         
     def _extract_audio_glados(self, outputs) -> np.ndarray:
         """Extract audio data from GLaDOS model outputs."""
-        # This is model-specific - adjust based on your model's output format
-        audio_tensor = outputs[0]  # Assume first output is audio
-        return audio_tensor.flatten().astype(np.float32)
+        # GLaDOS model outputs audio with shape [batch, 1, samples]
+        # Squeeze to remove batch and channel dimensions
+        audio_tensor = outputs[0].squeeze((0, 1))
+        return audio_tensor.astype(np.float32)
         
     def _extract_audio_kokoro(self, outputs) -> np.ndarray:
         """Extract audio data from Kokoro model outputs."""

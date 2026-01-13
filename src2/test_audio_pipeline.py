@@ -11,6 +11,28 @@ sys.path.insert(0, str(Path(__file__).parent))
 from glados2.main import GladosApp
 
 
+async def test_audio_playback():
+    """Test playback."""
+   
+    # Create app instance
+    app = GladosApp()
+    
+    print("✅ App initialized")
+    print(f"📊 Audio Manager: {app._audio_manager is not None}")
+    print(f"🧠 LLM Manager: {app._llm_manager is not None}")
+    print(f"🎯 State Manager: {app._state_manager.get_state().value}")
+    
+    # Test TTS directly first
+    print("\n🔊 Testing TTS synthesis...")
+    try:
+        success = await app._audio_manager.synthesize_and_play(
+            "Hello, this is a test of the GLaDOS text-to-speech system."
+        )
+        print(f"✅ TTS test: {'Success' if success else 'Failed'}")
+    except Exception as e:
+        print(f"❌ TTS test failed: {e}")
+
+
 async def test_audio_pipeline():
     """Test the complete audio pipeline: listening -> ASR -> LLM -> TTS -> playback."""
     print("🎤 Testing GLaDOS 2.0 Audio Pipeline")
@@ -68,7 +90,7 @@ async def test_audio_pipeline():
 def main():
     """Main entry point."""
     try:
-        asyncio.run(test_audio_pipeline())
+        asyncio.run(test_audio_playback())
     except KeyboardInterrupt:
         print("\n⚠️ Test interrupted by user")
     except Exception as e:

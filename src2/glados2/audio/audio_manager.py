@@ -293,19 +293,23 @@ class AudioManager:
     async def _play_audio_async(self, audio_data: np.ndarray, interruptible: bool) -> bool:
         """Asynchronous audio playback with sounddevice."""
         try:
+            # Ensure audio is 1D for mono playback
+            if audio_data.ndim > 1:
+                audio_data = audio_data.flatten()
+
             # Use sounddevice for playback
             playback_finished = asyncio.Event()
             playback_success = [True]  # Use list to modify from callback
-            
+
             def playback_finished_callback():
                 playback_finished.set()
-                
+
             def playback_error_callback(error):
                 logger.error(f"Audio playback error: {error}")
                 playback_success[0] = False
                 playback_finished.set()
-                
-            # Start playback
+
+            # Start playback (mono audio - channels inferred from shape)
             sd.play(
                 audio_data,
                 samplerate=self._tts.sample_rate,
