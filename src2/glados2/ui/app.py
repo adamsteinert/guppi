@@ -12,7 +12,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Footer, Header, Label, RichLog, Static
+from textual.widgets import Footer, Header, Input, Label, RichLog, Static
 
 from ..core.event_bus import EventBus, EventType
 from ..core.state_manager import StateManager, AppState
@@ -63,17 +63,20 @@ class HelpScreen(ModalScreen[None]):
         help_text = """
 [bold]GLaDOS 2.0 - Help[/bold]
 
+[yellow]Text Input:[/yellow]
+• Type in the input field at the bottom
+• Press [bold]Enter[/bold] to send your message
+• Text input is the default mode
+
 [yellow]Key Bindings:[/yellow]
-• [bold]Space[/bold] - Start/Stop listening
-• [bold]Enter[/bold] - Send typed message  
-• [bold]Ctrl+C[/bold] - Interrupt current response
-• [bold]Q[/bold] - Quit application
-• [bold]?[/bold] - Show this help
+• [bold]Cmd+L[/bold] - Start/Stop voice listening
+• [bold]Cmd+I[/bold] - Interrupt current response
+• [bold]Cmd+Q[/bold] - Quit application
+• [bold]Cmd+H[/bold] - Show this help
 
 [yellow]Audio Controls:[/yellow]
-• [bold]M[/bold] - Toggle microphone mute
-• [bold]S[/bold] - Toggle speaker mute
-• [bold]V[/bold] - Adjust volume (not yet implemented)
+• [bold]Cmd+M[/bold] - Toggle microphone mute
+• [bold]Cmd+S[/bold] - Toggle speaker mute
 
 [yellow]Status Indicators:[/yellow]
 • [green]Listening[/green] - Waiting for your voice
@@ -107,43 +110,56 @@ class GladosUI(App[None]):
     SUB_TITLE = "Stable Voice Assistant"
     
     BINDINGS: ClassVar = [
-        Binding("q", "quit", "Quit"),
-        Binding("question_mark", "help", "Help", key_display="?"),
-        Binding("space", "toggle_listening", "Listen"),
-        Binding("enter", "send_message", "Send"),
-        Binding("ctrl+c", "interrupt", "Interrupt"),
-        Binding("m", "toggle_microphone", "Mic"),
-        Binding("s", "toggle_speaker", "Speaker"),
+        Binding("cmd+q", "quit", "Quit"),
+        Binding("cmd+h", "help", "Help"),
+        Binding("cmd+l", "toggle_listening", "Listen"),
+        Binding("cmd+i", "interrupt", "Interrupt"),
+        Binding("cmd+m", "toggle_microphone", "Mic"),
+        Binding("cmd+s", "toggle_speaker", "Speaker"),
     ]
     
     CSS = """
     #main_container {
         layout: horizontal;
     }
-    
+
     #conversation_area {
         width: 3fr;
         border: solid $primary;
         margin: 1;
+        height: 1fr;
     }
-    
+
+    #conversation_log {
+        height: 1fr;
+    }
+
+    #input_container {
+        height: 3;
+        margin-top: 1;
+    }
+
+    #message_input {
+        width: 1fr;
+    }
+
     #status_area {
         width: 1fr;
         border: solid $secondary;
         margin: 1;
     }
-    
+
     #status_display {
         height: 3;
         border: solid $accent;
         margin: 1;
     }
-    
+
     #system_info {
         border: solid $accent;
         margin: 1;
     }
-    
+
     #help_dialog {
         width: 80%;
         height: 80%;
@@ -157,7 +173,8 @@ class GladosUI(App[None]):
         self._state_manager = StateManager(self._event_bus)
         self._conversation_log: Optional[ConversationLog] = None
         self._status_display: Optional[StatusDisplay] = None
-        
+        self._message_input: Optional[Input] = None
+
         # Managers will be injected by main app
         self._audio_manager = None
         self._llm_manager = None
@@ -170,32 +187,44 @@ class GladosUI(App[None]):
     def compose(self) -> ComposeResult:
         """Compose the main UI layout."""
         yield Header(show_clock=True)
-        
+
         with Container(id="main_container"):
             # Main conversation area
-            with Container(id="conversation_area"):
+            with Vertical(id="conversation_area"):
                 self._conversation_log = ConversationLog(id="conversation_log")
                 yield self._conversation_log
-                
-            # Status and controls area  
+
+                # Text input at bottom
+                with Container(id="input_container"):
+                    self._message_input = Input(
+                        placeholder="Type your message here and press Enter...",
+                        id="message_input"
+                    )
+                    yield self._message_input
+
+            # Status and controls area
             with Container(id="status_area"):
                 self._status_display = StatusDisplay(id="status_display")
                 yield self._status_display
-                
+
                 with Container(id="system_info"):
                     yield Static("Audio: [green]Ready[/]", id="audio_status")
                     yield Static("LLM: [green]Connected[/]", id="llm_status")
                     yield Static("Memory: [green]Active[/]", id="memory_status")
-                    
+
         yield Footer()
         
     def on_mount(self) -> None:
         """Initialize the application after mounting."""
         logger.info("GLaDOS 2.0 UI starting...")
-        
+
         # Initialize state
         self._state_manager.set_state(AppState.INITIALIZING)
-        
+
+        # Focus the input field by default
+        if self._message_input:
+            self._message_input.focus()
+
         # Start background services (stubbed for now)
         self.call_later(self._initialize_services)
         
@@ -254,11 +283,26 @@ class GladosUI(App[None]):
             self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "ready"})
             logger.info("Stopped listening...")
             
-    def action_send_message(self) -> None:
-        """Send a typed message (placeholder)."""
-        # TODO: Implement text input for manual message sending
-        if self._conversation_log:
-            self._conversation_log.add_message("user", "[Typed message functionality not yet implemented]")
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Enter key in input field."""
+        if event.input.id == "message_input":
+            message = event.value.strip()
+            if message and self._message_input:
+                # Clear the input
+                self._message_input.value = ""
+
+                # Add to conversation log
+                if self._conversation_log:
+                    self._conversation_log.add_message("user", message)
+
+                # Publish message to event bus for LLM processing
+                self._event_bus.publish(EventType.MESSAGE_RECEIVED, {
+                    "role": "user",
+                    "content": message,
+                    "source": "text_input"
+                })
+
+                logger.info(f"User sent text message: {message}")
             
     def action_interrupt(self) -> None:
         """Interrupt current operation."""
@@ -268,12 +312,22 @@ class GladosUI(App[None]):
         
     def action_toggle_microphone(self) -> None:
         """Toggle microphone mute."""
-        # TODO: Implement microphone control
+        if self._audio_manager:
+            current = self._audio_manager.is_microphone_muted()
+            self._audio_manager.set_microphone_muted(not current)
+            status = "muted" if not current else "unmuted"
+            if self._conversation_log:
+                self._conversation_log.add_message("system", f"Microphone {status}")
         logger.info("Microphone toggle requested")
-        
+
     def action_toggle_speaker(self) -> None:
         """Toggle speaker mute."""
-        # TODO: Implement speaker control  
+        if self._audio_manager:
+            current = self._audio_manager.is_speaker_muted()
+            self._audio_manager.set_speaker_muted(not current)
+            status = "muted" if not current else "unmuted"
+            if self._conversation_log:
+                self._conversation_log.add_message("system", f"Speaker {status}")
         logger.info("Speaker toggle requested")
         
     def action_quit(self) -> None:
