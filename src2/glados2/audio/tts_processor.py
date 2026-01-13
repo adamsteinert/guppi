@@ -322,11 +322,10 @@ class TTSProcessor:
             # Apply simple formant-like filtering
             modulation = 0.05 * np.sin(2 * np.pi * 5 * np.linspace(0, duration, samples))
             audio_data = audio_data * (1 + modulation)
-            
-            # Normalize
-            if np.max(np.abs(audio_data)) > 0:
-                audio_data = audio_data / np.max(np.abs(audio_data)) * 0.7
-                
+
+        # Apply post-processing to reduce pops
+        audio_data = self._postprocess_audio(audio_data)
+
         return audio_data
         
     def _preprocess_text_glados(self, text: str) -> np.ndarray:
@@ -416,13 +415,61 @@ class TTSProcessor:
         # GLaDOS model outputs audio with shape [batch, 1, 1, samples]
         # Squeeze to remove all dimensions except the last one (samples)
         audio_tensor = outputs[0].squeeze()
-        return audio_tensor.astype(np.float32)
+        audio_data = audio_tensor.astype(np.float32)
+
+        # Post-process to reduce popping and improve quality
+        audio_data = self._postprocess_audio(audio_data)
+
+        return audio_data
+
+    def _postprocess_audio(self, audio: np.ndarray) -> np.ndarray:
+        """
+        Post-process audio to reduce popping, clicks, and improve quality.
+
+        Steps:
+        1. Remove DC offset (prevents pops)
+        2. Normalize to prevent clipping
+        3. Apply fade in/fade out (prevents clicks at edges)
+        4. Soft-clip to handle any remaining peaks
+        """
+        if len(audio) == 0:
+            return audio
+
+        # 1. Remove DC offset (mean centering)
+        audio = audio - np.mean(audio)
+
+        # 2. Normalize to -0.95 to 0.95 range (leave headroom)
+        max_val = np.max(np.abs(audio))
+        if max_val > 0:
+            audio = audio / max_val * 0.95
+
+        # 3. Apply fade in/fade out to prevent clicks
+        fade_samples = min(int(self.sample_rate * 0.01), len(audio) // 10)  # 10ms or 10% of audio
+
+        if fade_samples > 0:
+            # Fade in (first few samples)
+            fade_in = np.linspace(0, 1, fade_samples)
+            audio[:fade_samples] *= fade_in
+
+            # Fade out (last few samples)
+            fade_out = np.linspace(1, 0, fade_samples)
+            audio[-fade_samples:] *= fade_out
+
+        # 4. Soft clipping for any remaining peaks (prevents harsh clipping)
+        audio = np.tanh(audio)
+
+        return audio
         
     def _extract_audio_kokoro(self, outputs) -> np.ndarray:
         """Extract audio data from Kokoro model outputs."""
         # This is model-specific - adjust based on your model's output format
         audio_tensor = outputs[0]  # Assume first output is audio
-        return audio_tensor.flatten().astype(np.float32)
+        audio_data = audio_tensor.flatten().astype(np.float32)
+
+        # Post-process to reduce popping
+        audio_data = self._postprocess_audio(audio_data)
+
+        return audio_data
         
     def cancel_synthesis(self) -> None:
         """Cancel ongoing synthesis."""
