@@ -64,6 +64,9 @@ class TTSProcessor:
         self.phonemizer = None  # Phonemizer instance if available
         self.phoneme_to_id: Optional[dict] = None
 
+        # Kokoro specific components
+        self.voice_embeddings: dict = {}  # Voice name -> embedding mapping
+
         # GLaDOS constants
         self.PAD = "_"
         self.BOS = "^"
@@ -127,6 +130,14 @@ class TTSProcessor:
                     providers=['CPUExecutionProvider']
                 )
                 logger.info(f"Loaded Kokoro TTS model from {kokoro_path}")
+
+                # Load Kokoro voice embeddings
+                voices_path = self.model_dir / "kokoro-voices-v1.0.bin"
+                if voices_path.exists():
+                    self._load_voice_embeddings(voices_path)
+                else:
+                    logger.warning(f"Kokoro voices file not found: {voices_path}")
+
             except Exception as e:
                 logger.error(f"Failed to load Kokoro model: {e}")
 
@@ -141,6 +152,29 @@ class TTSProcessor:
                 logger.info(f"Loaded Phonemizer model from {phonemizer_path}")
             except Exception as e:
                 logger.error(f"Failed to load Phonemizer model: {e}")
+
+    def _load_voice_embeddings(self, voices_path: Path) -> None:
+        """Load Kokoro voice embeddings from ZIP file."""
+        try:
+            import zipfile
+            import io
+
+            with zipfile.ZipFile(voices_path, 'r') as zf:
+                # Load all voice embeddings
+                for filename in zf.namelist():
+                    if filename.endswith('.npy'):
+                        voice_name = filename.replace('.npy', '')
+
+                        # Read the numpy array from the ZIP
+                        with zf.open(filename) as f:
+                            embedding = np.load(io.BytesIO(f.read()))
+                            self.voice_embeddings[voice_name] = embedding
+                            logger.debug(f"Loaded voice embedding for {voice_name}: shape {embedding.shape}")
+
+            logger.info(f"Loaded {len(self.voice_embeddings)} Kokoro voice embeddings")
+
+        except Exception as e:
+            logger.error(f"Failed to load voice embeddings from {voices_path}: {e}")
                 
     async def synthesize_speech(self, text: str, voice: Optional[str] = None) -> Optional[np.ndarray]:
         """
@@ -251,26 +285,42 @@ class TTSProcessor:
             phonemes = text  # Default fallback
             if self.phonemizer_session:
                 phonemes = self._text_to_phonemes(text)
-                
+
             if self._cancelled.is_set():
                 return None
-                
+
             # Preprocess for Kokoro model
             processed_input = self._preprocess_text_kokoro(phonemes, voice)
-            
+
             if self._cancelled.is_set():
                 return None
-                
+
             # Run Kokoro TTS inference
             input_names = [inp.name for inp in self.kokoro_session.get_inputs()]
+            logger.debug(f"Kokoro model inputs: {input_names}")
+
+            # Log expected shapes for debugging
+            for inp in self.kokoro_session.get_inputs():
+                logger.debug(f"Input '{inp.name}' expects shape: {inp.shape}, type: {inp.type}")
+
             inputs = {}
-            
-            if len(input_names) >= 2:
-                inputs[input_names[0]] = processed_input
-                inputs[input_names[1]] = self._get_voice_embedding(voice)
-            else:
-                inputs[input_names[0]] = processed_input
-                
+
+            # Map inputs by name (Kokoro expects: tokens, style, speed)
+            for input_name in input_names:
+                if input_name == 'tokens':
+                    inputs[input_name] = processed_input
+                    logger.debug(f"Tokens shape: {processed_input.shape}")
+                elif input_name == 'style':
+                    # Get voice embedding (already shaped as (1, 256))
+                    style_embedding = self._get_voice_embedding(voice)
+                    inputs[input_name] = style_embedding
+                    logger.debug(f"Style shape: {style_embedding.shape}")
+                elif input_name == 'speed':
+                    # Speed factor (1.0 = normal speed)
+                    inputs[input_name] = np.array([1.0], dtype=np.float32)
+                else:
+                    logger.warning(f"Unknown Kokoro input: {input_name}")
+
             outputs = self.kokoro_session.run(None, inputs)
             
             if self._cancelled.is_set():
@@ -391,7 +441,8 @@ class TTSProcessor:
     def _preprocess_text_kokoro(self, text: str, voice: str) -> np.ndarray:
         """Preprocess text for Kokoro model."""
         # This is model-specific - adjust based on Kokoro model requirements
-        encoded = np.array([ord(c) for c in text[:200]], dtype=np.int32)
+        # Kokoro expects int64 tokens
+        encoded = np.array([ord(c) for c in text[:200]], dtype=np.int64)
         return encoded.reshape(1, -1)
         
     def _text_to_phonemes(self, text: str) -> str:
@@ -406,9 +457,24 @@ class TTSProcessor:
             
     def _get_voice_embedding(self, voice: str) -> np.ndarray:
         """Get voice embedding for Kokoro model."""
-        # This would typically load from kokoro-voices-v1.0.bin
-        # For now, return a dummy embedding
-        return np.random.randn(1, 256).astype(np.float32)
+        if voice in self.voice_embeddings:
+            embedding = self.voice_embeddings[voice]
+            logger.debug(f"Loaded voice embedding for {voice}: shape {embedding.shape}")
+
+            # Kokoro embeddings are (510, 1, 256), squeeze to (510, 256)
+            if len(embedding.shape) == 3 and embedding.shape[1] == 1:
+                embedding = embedding.squeeze(1)
+
+            # Model expects (1, 256) - take mean of all 510 vectors
+            # This gives a single representative vector for the voice
+            embedding = np.mean(embedding, axis=0, keepdims=True)
+            logger.debug(f"Averaged voice embedding to: {embedding.shape}")
+
+            return embedding.astype(np.float32)
+        else:
+            logger.warning(f"Voice embedding not found for '{voice}', using fallback")
+            # Return a zero embedding as fallback
+            return np.zeros((1, 256), dtype=np.float32)
         
     def _extract_audio_glados(self, outputs) -> np.ndarray:
         """Extract audio data from GLaDOS model outputs."""
@@ -458,7 +524,8 @@ class TTSProcessor:
         # 4. Soft clipping for any remaining peaks (prevents harsh clipping)
         audio = np.tanh(audio)
 
-        return audio
+        # Ensure float32 output (numpy operations can promote to float64)
+        return audio.astype(np.float32)
         
     def _extract_audio_kokoro(self, outputs) -> np.ndarray:
         """Extract audio data from Kokoro model outputs."""
