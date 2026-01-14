@@ -3,6 +3,7 @@
 import asyncio
 from pathlib import Path
 import sys
+import threading
 from typing import ClassVar, Optional
 
 from loguru import logger
@@ -180,9 +181,11 @@ class GladosUI(App[None]):
     }
     """
     
-    def __init__(self):
+    def __init__(self, event_bus: Optional[EventBus] = None):
         super().__init__()
-        self._event_bus = EventBus()
+        # Use provided EventBus or create a new one
+        # IMPORTANT: For events to work across components, pass in a shared EventBus!
+        self._event_bus = event_bus if event_bus is not None else EventBus()
         self._state_manager = StateManager(self._event_bus)
         self._conversation_log: Optional[ConversationLog] = None
         self._debug_log: Optional[RichLog] = None
@@ -200,7 +203,33 @@ class GladosUI(App[None]):
         self._event_bus.subscribe(EventType.STATE_CHANGED, self._on_state_changed)
         self._event_bus.subscribe(EventType.MESSAGE_RECEIVED, self._on_message_received)
         self._event_bus.subscribe(EventType.AUDIO_STATUS_CHANGED, self._on_audio_status_changed)
-        
+        self._event_bus.subscribe(EventType.LLM_RESPONSE_COMPLETED, self._on_llm_response)
+        self._event_bus.subscribe(EventType.LLM_RESPONSE_CHUNK, self._on_llm_response_chunk)
+
+    @property
+    def event_bus(self) -> EventBus:
+        """Get the event bus for publishing events to the UI."""
+        return self._event_bus
+
+    def display_message(self, role: str, content: str) -> None:
+        """
+        Directly display a message in the conversation log.
+
+        This is a convenience method that bypasses the event bus.
+        Use this for testing or when you have direct access to the UI.
+
+        Args:
+            role: "user", "assistant", or "system"
+            content: The message content
+        """
+        if self._conversation_log and content:
+            self._conversation_log.add_message(role, content)
+            logger.debug(f"Direct message displayed: {role}: {content[:30]}...")
+
+    def display_response(self, content: str) -> None:
+        """Convenience method to display an assistant response."""
+        self.display_message("assistant", content)
+
     def compose(self) -> ComposeResult:
         """Compose the main UI layout."""
         yield Header(show_clock=True)
@@ -239,21 +268,33 @@ class GladosUI(App[None]):
     def _logger_sink(self, message: str) -> None:
         """Custom logger sink that writes to the debug log widget."""
         if self._debug_log:
-            # Strip ANSI codes and write to debug log
-            # Loguru includes formatting, we'll write it as-is
-            self.call_from_thread(self._debug_log.write, message.rstrip())
+            msg = message.rstrip()
+            # Check if we're on the main thread or a background thread
+            # call_from_thread only works from background threads
+            if threading.current_thread() is threading.main_thread():
+                # On main thread - call directly
+                try:
+                    self._debug_log.write(msg)
+                except Exception:
+                    pass  # Silently ignore if widget not ready
+            else:
+                # On background thread - use call_from_thread
+                try:
+                    self.call_from_thread(self._debug_log.write, msg)
+                except Exception:
+                    pass  # Silently ignore if app not ready
 
     def on_mount(self) -> None:
         """Initialize the application after mounting."""
         # Remove default logger handlers to prevent terminal output
-        logger.remove()
+        #logger.remove()
 
         # Add custom logger sink to capture log output (all levels to debug widget)
         self._logger_sink_id = logger.add(
             self._logger_sink,
             format="<level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
             colorize=True,
-            level=0  # Capture all log levels (TRACE and above)
+            level="TRACE"  # Capture all log levels (TRACE and above)
         )
 
         logger.info("GLaDOS 2.0 UI starting...")
@@ -296,16 +337,18 @@ class GladosUI(App[None]):
             logger.debug(f"State set to: {new_state.value}")
             
     def _on_message_received(self, event_data: dict) -> None:
-        """Handle new messages."""
+        """Handle new messages (user, assistant, system)."""
         role = event_data.get("role", "unknown")
         content = event_data.get("content", "")
         source = event_data.get("source", "unknown")
 
-        if self._conversation_log:
-            self._conversation_log.add_message(role, content)
+        logger.debug(f"_on_message_received: role={role}, source={source}, len={len(content)}")
 
-        # Log message event
-        logger.debug(f"Message received: role={role}, source={source}, length={len(content)}")
+        if self._conversation_log and content:
+            self._conversation_log.add_message(role, content)
+            logger.debug(f"Message added to log: {role}: {content[:30]}...")
+        else:
+            logger.warning(f"Could not add message: log={self._conversation_log is not None}, content={bool(content)}")
             
     def _on_audio_status_changed(self, event_data: dict) -> None:
         """Handle audio status changes."""
@@ -322,7 +365,44 @@ class GladosUI(App[None]):
 
         # Log audio status change
         logger.debug(f"Audio status changed to: {status}")
-            
+
+    def _on_llm_response(self, event_data: dict) -> None:
+        """Handle completed LLM responses."""
+        content = event_data.get("content", "")
+        logger.debug(f"_on_llm_response called with content length: {len(content)}")
+
+        if content and self._conversation_log:
+            # Try direct call first (works if on main thread)
+            try:
+                self._conversation_log.add_message("assistant", content)
+                logger.debug("Added assistant message directly")
+            except Exception as e:
+                # Fall back to call_from_thread if needed
+                logger.debug(f"Direct call failed ({e}), trying call_from_thread")
+                try:
+                    self.call_from_thread(
+                        self._conversation_log.add_message,
+                        "assistant",
+                        content
+                    )
+                except Exception as e2:
+                    logger.error(f"Failed to add message: {e2}")
+
+        if content:
+            logger.info(f"LLM response displayed: {content[:50]}...")
+
+    def _on_llm_response_chunk(self, event_data: dict) -> None:
+        """Handle streaming LLM response chunks."""
+        is_first = event_data.get("is_first", False)
+        is_last = event_data.get("is_last", False)
+
+        # For streaming, we could update incrementally
+        # For now, we'll just log chunks and wait for complete response
+        if is_first:
+            logger.debug("LLM response streaming started")
+        if is_last:
+            logger.debug("LLM response streaming completed")
+
     def action_help(self) -> None:
         """Show help screen."""
         self.push_screen(HelpScreen())
@@ -373,10 +453,27 @@ class GladosUI(App[None]):
                 self._exit_text_mode()
 
     def action_interrupt(self) -> None:
-        """Interrupt current operation."""
-        logger.info("Interrupt requested")
+        """Interrupt current operation and stop audio playback."""
+        logger.info("Interrupt requested - stopping all audio")
+
+        # Publish interrupt event for other components to handle
+        self._event_bus.publish(EventType.INTERRUPT_REQUESTED, {})
+
+        # Stop audio playback immediately using sounddevice
+        try:
+            import sounddevice as sd
+            sd.stop()
+            logger.debug("Audio playback stopped via sounddevice")
+        except Exception as e:
+            logger.warning(f"Could not stop audio playback: {e}")
+
+        # Update state
         self._state_manager.set_state(AppState.IDLE)
-        self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "interrupted"})
+        self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "ready"})
+
+        # Show feedback in conversation log
+        if self._conversation_log:
+            self._conversation_log.add_message("system", "Interrupted")
         
     def action_toggle_microphone(self) -> None:
         """Toggle microphone mute."""
@@ -454,8 +551,17 @@ class GladosUI(App[None]):
 
 def main():
     """Entry point for the GLaDOS 2.0 UI."""
+    # Create a shared event bus that can be used by other components
+    shared_event_bus = EventBus()
+
     try:
-        app = GladosUI()
+        # Pass the shared event bus to the UI
+        app = GladosUI(event_bus=shared_event_bus)
+
+        # Example: Other components can use the same event bus
+        # llm_manager = LLMManager(event_bus=shared_event_bus)
+        # audio_manager = AudioManager(event_bus=shared_event_bus)
+
         app.run()
     except KeyboardInterrupt:
         logger.info("Application interrupted by user")

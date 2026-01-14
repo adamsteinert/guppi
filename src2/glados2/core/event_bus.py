@@ -18,6 +18,7 @@ class EventType(Enum):
     TTS_COMPLETED = "tts_completed"
     AUDIO_PLAYBACK_STARTED = "audio_playback_started"
     AUDIO_PLAYBACK_COMPLETED = "audio_playback_completed"
+    INTERRUPT_REQUESTED = "interrupt_requested"
     ERROR_OCCURRED = "error_occurred"
     SHUTDOWN_REQUESTED = "shutdown_requested"
 
