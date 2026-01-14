@@ -265,6 +265,8 @@ class GladosUI(App[None]):
                     yield Static("Audio: [green]Ready[/]", id="audio_status")
                     yield Static("LLM: [green]Connected[/]", id="llm_status")
                     yield Static("Memory: [green]Active[/]", id="memory_status")
+                    yield Static("Mic: [dim]Loading...[/]", id="mic_device")
+                    yield Static("Speaker: [dim]Loading...[/]", id="speaker_device")
 
         yield Footer()
         
@@ -326,10 +328,52 @@ class GladosUI(App[None]):
 
         logger.info("All services initialized successfully")
 
+        # Update audio device info
+        self._update_audio_device_info()
+
         # Speak salutation if configured
         if self._salutation and self._audio_manager:
             logger.info(f"Speaking salutation: {self._salutation}")
             asyncio.create_task(self._audio_manager.synthesize_and_play(self._salutation))
+
+    def _update_audio_device_info(self) -> None:
+        """Query and display current audio input/output devices."""
+        try:
+            import sounddevice as sd
+
+            # Get default devices
+            default_input = sd.query_devices(kind='input')
+            default_output = sd.query_devices(kind='output')
+
+            # Get device names (truncate if too long)
+            mic_name = default_input.get('name', 'Unknown') if default_input else 'None'
+            speaker_name = default_output.get('name', 'Unknown') if default_output else 'None'
+
+            # Truncate long names
+            max_len = 25
+            if len(mic_name) > max_len:
+                mic_name = mic_name[:max_len-3] + "..."
+            if len(speaker_name) > max_len:
+                speaker_name = speaker_name[:max_len-3] + "..."
+
+            # Update UI widgets
+            mic_widget = self.query_one("#mic_device", Static)
+            speaker_widget = self.query_one("#speaker_device", Static)
+
+            mic_widget.update(f"Mic: [cyan]{mic_name}[/]")
+            speaker_widget.update(f"Speaker: [cyan]{speaker_name}[/]")
+
+            logger.debug(f"Audio devices - Input: {mic_name}, Output: {speaker_name}")
+
+        except Exception as e:
+            logger.warning(f"Could not query audio devices: {e}")
+            try:
+                mic_widget = self.query_one("#mic_device", Static)
+                speaker_widget = self.query_one("#speaker_device", Static)
+                mic_widget.update("Mic: [red]Error[/]")
+                speaker_widget.update("Speaker: [red]Error[/]")
+            except Exception:
+                pass
             
     def _on_state_changed(self, event_data: dict) -> None:
         """Handle state changes from the state manager."""
