@@ -287,7 +287,7 @@ class GladosUI(App[None]):
     def on_mount(self) -> None:
         """Initialize the application after mounting."""
         # Remove default logger handlers to prevent terminal output
-        #logger.remove()
+        logger.remove()
 
         # Add custom logger sink to capture log output (all levels to debug widget)
         self._logger_sink_id = logger.add(
