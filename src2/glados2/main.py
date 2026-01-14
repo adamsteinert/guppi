@@ -76,15 +76,16 @@ class GladosApp:
     def run_ui(self) -> None:
         """Run the application with UI."""
         logger.info("Starting GLaDOS 2.0 with UI...")
-        
+
         try:
-            # Create and inject dependencies into UI
-            self._ui = GladosUI()
-            self._ui._event_bus = self._event_bus
+            # Create UI with shared event bus (MUST be passed to constructor
+            # so event subscriptions are registered on the shared bus)
+            self._ui = GladosUI(event_bus=self._event_bus)
+            # Inject other dependencies
             self._ui._state_manager = self._state_manager
             self._ui._audio_manager = self._audio_manager
             self._ui._llm_manager = self._llm_manager
-            
+
             # Run the UI
             self._ui.run()
             

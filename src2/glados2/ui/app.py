@@ -344,6 +344,16 @@ class GladosUI(App[None]):
 
         logger.debug(f"_on_message_received: role={role}, source={source}, len={len(content)}")
 
+        # Skip assistant messages - they're handled by _on_llm_response to avoid duplicates
+        if role == "assistant":
+            logger.debug("Skipping assistant message (handled by _on_llm_response)")
+            return
+
+        # Skip user messages from text_input - already added directly in on_input_submitted
+        if role == "user" and source == "text_input":
+            logger.debug("Skipping text_input user message (already displayed)")
+            return
+
         if self._conversation_log and content:
             self._conversation_log.add_message(role, content)
             logger.debug(f"Message added to log: {role}: {content[:30]}...")
@@ -368,7 +378,8 @@ class GladosUI(App[None]):
 
     def _on_llm_response(self, event_data: dict) -> None:
         """Handle completed LLM responses."""
-        content = event_data.get("content", "")
+        # LLM manager publishes with "full_response" key
+        content = event_data.get("full_response", "") or event_data.get("content", "")
         logger.debug(f"_on_llm_response called with content length: {len(content)}")
 
         if content and self._conversation_log:
