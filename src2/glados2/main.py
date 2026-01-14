@@ -85,10 +85,12 @@ class GladosApp:
             self._ui._state_manager = self._state_manager
             self._ui._audio_manager = self._audio_manager
             self._ui._llm_manager = self._llm_manager
+            # Pass salutation config so UI can speak it on startup
+            self._ui._salutation = self._config.salutation
 
             # Run the UI
             self._ui.run()
-            
+
         except KeyboardInterrupt:
             logger.info("Application interrupted by user")
         finally:
@@ -119,15 +121,60 @@ class GladosApp:
     def _cleanup(self) -> None:
         """Clean up resources."""
         logger.info("Cleaning up GLaDOS 2.0...")
-        
+
         # Cancel any ongoing operations
         if hasattr(self._audio_manager, 'interrupt_playback'):
             self._audio_manager.interrupt_playback()
-            
+
         if hasattr(self._llm_manager, 'cancel_current_request'):
             self._llm_manager.cancel_current_request()
-            
+
+        # Speak valediction if configured
+        if self._config.valediction:
+            self._speak_valediction()
+
         logger.info("Cleanup completed")
+
+    def _speak_valediction(self) -> None:
+        """Speak the valediction message (blocking)."""
+        try:
+            import sounddevice as sd
+
+            logger.info(f"Speaking valediction: {self._config.valediction}")
+
+            # Get the TTS processor from audio manager
+            tts = self._audio_manager._tts
+
+            # Synthesize audio synchronously using a new event loop
+            # (the main loop may be closed at this point)
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                audio = loop.run_until_complete(
+                    tts.synthesize_speech(self._config.valediction)
+                )
+                loop.close()
+            except Exception as e:
+                logger.error(f"Error synthesizing valediction: {e}")
+                return
+
+            if audio is not None and len(audio) > 0:
+                # Get correct sample rate
+                info = tts.get_model_info()
+                if tts.voice == "glados":
+                    sample_rate = info.get("glados_sample_rate", 22050)
+                else:
+                    sample_rate = info.get("kokoro_sample_rate", 24000)
+
+                # Play audio blocking (wait for completion)
+                sd.play(audio, samplerate=sample_rate)
+                sd.wait()
+                logger.info("Valediction spoken")
+            else:
+                logger.warning("Failed to synthesize valediction")
+
+        except Exception as e:
+            logger.error(f"Error speaking valediction: {e}")
 
 
 def main():

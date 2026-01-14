@@ -199,6 +199,9 @@ class GladosUI(App[None]):
         self._audio_manager = None
         self._llm_manager = None
 
+        # Salutation to speak on startup (injected by main app)
+        self._salutation: Optional[str] = None
+
         # Register for events
         self._event_bus.subscribe(EventType.STATE_CHANGED, self._on_state_changed)
         self._event_bus.subscribe(EventType.MESSAGE_RECEIVED, self._on_message_received)
@@ -322,6 +325,11 @@ class GladosUI(App[None]):
             self._conversation_log.add_message("system", "GLaDOS 2.0 initialized successfully")
 
         logger.info("All services initialized successfully")
+
+        # Speak salutation if configured
+        if self._salutation and self._audio_manager:
+            logger.info(f"Speaking salutation: {self._salutation}")
+            asyncio.create_task(self._audio_manager.synthesize_and_play(self._salutation))
             
     def _on_state_changed(self, event_data: dict) -> None:
         """Handle state changes from the state manager."""

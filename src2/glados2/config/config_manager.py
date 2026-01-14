@@ -82,12 +82,16 @@ class GladosConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
     ui: UIConfig = field(default_factory=UIConfig)
-    
+
     # Global settings
     wake_word: Optional[str] = None
     wake_word_variants: str = ""
     announcement: Optional[str] = None
     log_level: str = "INFO"
+
+    # Salutation and valediction (spoken on start/stop)
+    salutation: Optional[str] = None  # Greeting spoken when app starts
+    valediction: Optional[str] = None  # Farewell spoken when app stops
     
     @classmethod
     def from_yaml(cls, config_path: str | Path) -> "GladosConfig":
@@ -176,7 +180,9 @@ class GladosConfig:
         config.wake_word_variants = data.get("wake_word_variants", config.wake_word_variants)
         config.announcement = data.get("announcement", config.announcement)
         config.log_level = data.get("log_level", config.log_level)
-        
+        config.salutation = data.get("salutation", config.salutation)
+        config.valediction = data.get("valediction", config.valediction)
+
         return config
         
     def to_dict(self) -> Dict[str, Any]:
@@ -217,6 +223,8 @@ class GladosConfig:
             "wake_word_variants": self.wake_word_variants,
             "announcement": self.announcement,
             "log_level": self.log_level,
+            "salutation": self.salutation,
+            "valediction": self.valediction,
         }
         
     def save_to_yaml(self, config_path: str | Path) -> None:
