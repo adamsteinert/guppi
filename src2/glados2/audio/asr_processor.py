@@ -2,7 +2,7 @@
 
 import asyncio
 import numpy as np
-from typing import Optional, Union
+from typing import Optional, Dict
 import threading
 from pathlib import Path
 
@@ -10,6 +10,8 @@ from loguru import logger
 
 try:
     import onnxruntime as ort
+    # Reduce ONNX Runtime verbosity
+    ort.set_default_logger_severity(4)
 except ImportError:
     logger.warning("ONNX Runtime not available - ASR will use fallback")
     ort = None
@@ -19,6 +21,15 @@ try:
 except ImportError:
     logger.warning("soundfile not available - using numpy for audio")
     sf = None
+
+# Import mel spectrogram calculator from original GLaDOS
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
+try:
+    from glados.ASR.mel_spectrogram import MelSpectrogramCalculator
+except ImportError:
+    logger.warning("MelSpectrogramCalculator not available - will use fallback")
+    MelSpectrogramCalculator = None
 
 
 class ASRProcessor:
@@ -32,15 +43,25 @@ class ASRProcessor:
     def __init__(
         self,
         model_path: str = "models/ASR/nemo-parakeet_tdt_ctc_110m.onnx",
+        tokens_path: str = "models/ASR/nemo-parakeet_tdt_ctc_110m_tokens.txt",
         sample_rate: int = 16000
     ):
         self.model_path = Path(model_path)
+        self.tokens_path = Path(tokens_path)
         self.sample_rate = sample_rate
         self.session: Optional[ort.InferenceSession] = None
+        self.vocab: Dict[int, str] = {}
         self._lock = threading.Lock()
-        
-        # Load ASR model
+
+        # Initialize mel spectrogram calculator
+        if MelSpectrogramCalculator:
+            self.mel_calculator = MelSpectrogramCalculator(sr=sample_rate)
+        else:
+            self.mel_calculator = None
+
+        # Load ASR model and vocabulary
         self._load_model()
+        self._load_vocabulary()
         
     def _load_model(self) -> None:
         """Load the ASR ONNX model."""
@@ -76,7 +97,24 @@ class ASRProcessor:
         except Exception as e:
             logger.error(f"Failed to load ASR model: {e}")
             self.session = None
-            
+
+    def _load_vocabulary(self) -> None:
+        """Load token vocabulary from file."""
+        if not self.tokens_path.exists():
+            logger.warning(f"Tokens file not found at {self.tokens_path}")
+            return
+
+        try:
+            with open(self.tokens_path, encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 2:
+                        token, index = parts[0], parts[1]
+                        self.vocab[int(index)] = token
+            logger.info(f"Loaded {len(self.vocab)} tokens from {self.tokens_path}")
+        except Exception as e:
+            logger.error(f"Failed to load vocabulary: {e}")
+
     async def transcribe_audio(self, audio_data: np.ndarray) -> Optional[str]:
         """
         Transcribe audio data to text.
@@ -113,21 +151,42 @@ class ASRProcessor:
             
     def _onnx_transcribe(self, audio_data: np.ndarray) -> Optional[str]:
         """Transcribe using ONNX Nemo Parakeet model."""
-        # Preprocess audio for Nemo model
-        processed_audio = self._preprocess_audio(audio_data)
-        
-        # Prepare input tensor
-        # Note: This is model-specific formatting - adjust based on your model's requirements
-        input_name = self.session.get_inputs()[0].name
-        
+        if not self.mel_calculator:
+            logger.warning("Mel spectrogram calculator not available")
+            return self._fallback_transcribe(audio_data)
+
+        # Preprocess audio and compute mel spectrogram
+        audio_data = audio_data.astype(np.float32)
+
+        # Ensure audio is long enough for mel spectrogram calculation
+        min_samples = 400  # n_fft size
+        if len(audio_data) < min_samples:
+            logger.warning(f"Audio too short ({len(audio_data)} samples), padding to {min_samples}")
+            audio_data = np.pad(audio_data, (0, min_samples - len(audio_data)), mode='constant')
+
+        # Compute mel spectrogram using the calculator
+        mel_spec = self.mel_calculator.compute(audio_data)
+
+        # Normalize
+        mel_spec = (mel_spec - mel_spec.mean()) / (mel_spec.std() + 1e-5)
+
+        # Add batch dimension: [n_mels, time] -> [1, n_mels, time]
+        mel_spec = np.expand_dims(mel_spec, axis=0).astype(np.float32)
+
+        # Prepare length input (number of time frames)
+        length = np.array([mel_spec.shape[2]], dtype=np.int64)
+
+        # Create input dictionary
+        input_dict = {"audio_signal": mel_spec, "length": length}
+
+        logger.debug(f"ASR input shapes - audio_signal: {mel_spec.shape}, length: {length}")
+
         # Run inference
-        inputs = {input_name: processed_audio}
-        outputs = self.session.run(None, inputs)
-        
+        outputs = self.session.run(None, input_dict)
+
         # Post-process outputs to get text
-        # Note: This is model-specific - adjust based on your model's output format
         transcription = self._postprocess_outputs(outputs)
-        
+
         logger.debug(f"ONNX transcription result: {transcription}")
         return transcription
         
@@ -153,31 +212,51 @@ class ASRProcessor:
             
         return audio_data
         
-    def _postprocess_outputs(self, outputs) -> str:
+    def _postprocess_outputs(self, outputs) -> Optional[str]:
         """
-        Post-process model outputs to extract text.
-        
-        This is model-specific. For CTC models, we typically need to:
-        - Apply CTC decoding
-        - Map tokens to characters/words
-        - Remove blanks and repetitions
+        Post-process model outputs to extract text using CTC decoding.
+
+        Decodes model output logits into text by:
+        - Taking argmax to get predicted token indices
+        - Filtering out blank tokens
+        - Removing consecutive repeated tokens
+        - Handling subword tokens with special prefix
         """
-        # This is a simplified version - real implementation depends on model output format
         try:
-            # For demonstration, assuming the model outputs logits or token IDs
-            output_tensor = outputs[0]  # First output
-            
-            # Simple greedy decoding (replace with proper CTC decoding for real model)
-            if output_tensor.ndim > 1:
-                # If output is logits, take argmax
-                token_ids = np.argmax(output_tensor, axis=-1)
-            else:
-                token_ids = output_tensor
-                
-            # Convert token IDs to text (this is model-specific)
-            # For now, return a placeholder that indicates we got audio
-            return "transcribed speech placeholder"  # Replace with real token-to-text conversion
-            
+            output_logits = outputs[0]  # Shape: (batch, seq_len, vocab_size)
+
+            # Greedy decoding: take argmax
+            predictions = np.argmax(output_logits, axis=-1)
+
+            decoded_texts = []
+            for batch_idx in range(predictions.shape[0]):
+                tokens = []
+                prev_token = None
+
+                for idx in predictions[batch_idx]:
+                    if idx in self.vocab:
+                        token = self.vocab[idx]
+                        # Skip <blk> tokens and repeated tokens (CTC decoding)
+                        if token != "<blk>" and token != prev_token:
+                            tokens.append(token)
+                            prev_token = token
+
+                # Combine tokens with improved handling
+                text = ""
+                for token in tokens:
+                    if token.startswith("▁"):  # Subword marker
+                        text += " " + token[1:]
+                    else:
+                        text += token
+
+                # Clean up the text
+                text = text.strip()
+                text = " ".join(text.split())  # Remove multiple spaces
+
+                decoded_texts.append(text)
+
+            return decoded_texts[0] if decoded_texts else None
+
         except Exception as e:
             logger.error(f"Error in output post-processing: {e}")
             return None
@@ -216,9 +295,11 @@ class ASRProcessor:
             return {
                 "model_loaded": False,
                 "model_path": str(self.model_path),
-                "fallback_mode": True
+                "fallback_mode": True,
+                "mel_calculator_loaded": self.mel_calculator is not None,
+                "vocab_size": len(self.vocab),
             }
-            
+
         return {
             "model_loaded": True,
             "model_path": str(self.model_path),
@@ -226,4 +307,6 @@ class ASRProcessor:
             "providers": self.session.get_providers(),
             "input_shape": [inp.shape for inp in self.session.get_inputs()],
             "output_shape": [out.shape for out in self.session.get_outputs()],
+            "mel_calculator_loaded": self.mel_calculator is not None,
+            "vocab_size": len(self.vocab),
         }

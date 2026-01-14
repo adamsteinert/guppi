@@ -1,7 +1,7 @@
 """Audio management system for GLaDOS 2.0."""
 
 import asyncio
-from typing import Optional, Callable
+from typing import Optional, Callable, Tuple
 from enum import Enum
 import threading
 import time
@@ -25,6 +25,102 @@ class AudioState(Enum):
     PLAYING = "playing"
     MUTED = "muted"
     ERROR = "error"
+
+
+class AudioDeviceMonitor:
+    """
+    Monitors system audio devices for changes.
+
+    Polls for device changes periodically and publishes events when
+    the default input or output device changes.
+    """
+
+    # Class-level lock to prevent conflicts with audio operations
+    # when refreshing the device cache
+    _refresh_lock = threading.Lock()
+
+    def __init__(self, event_bus: EventBus, poll_interval: float = 2.0):
+        self._event_bus = event_bus
+        self._poll_interval = poll_interval
+        self._running = False
+        self._monitor_thread: Optional[threading.Thread] = None
+        self._last_input_device: Optional[str] = None
+        self._last_output_device: Optional[str] = None
+
+    def start(self) -> None:
+        """Start monitoring for device changes."""
+        if self._running:
+            return
+
+        self._running = True
+        # Initialize with current devices
+        self._last_input_device, self._last_output_device = self._get_current_devices()
+
+        self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self._monitor_thread.start()
+        logger.info("Audio device monitor started")
+
+    def stop(self) -> None:
+        """Stop monitoring for device changes."""
+        self._running = False
+        if self._monitor_thread:
+            self._monitor_thread.join(timeout=3.0)
+            self._monitor_thread = None
+        logger.info("Audio device monitor stopped")
+
+    def _get_current_devices(self) -> Tuple[Optional[str], Optional[str]]:
+        """Get the names of current default input and output devices.
+
+        Forces a refresh of the PortAudio device cache to detect
+        system audio device changes (e.g., switching from AirPods to speakers).
+        """
+        with self._refresh_lock:
+            try:
+                # Force PortAudio to refresh its device cache
+                # This is necessary because PortAudio caches the device list
+                # and won't detect changes without re-initialization
+                sd._terminate()
+                sd._initialize()
+
+                input_device = sd.query_devices(kind='input')
+                output_device = sd.query_devices(kind='output')
+
+                input_name = input_device.get('name') if input_device else None
+                output_name = output_device.get('name') if output_device else None
+
+                return input_name, output_name
+            except Exception as e:
+                logger.warning(f"Error querying audio devices: {e}")
+                return None, None
+
+    def _monitor_loop(self) -> None:
+        """Main monitoring loop that polls for device changes."""
+        while self._running:
+            try:
+                current_input, current_output = self._get_current_devices()
+
+                input_changed = current_input != self._last_input_device
+                output_changed = current_output != self._last_output_device
+
+                if input_changed or output_changed:
+                    logger.info(f"Audio device change detected - Input: {self._last_input_device} -> {current_input}, Output: {self._last_output_device} -> {current_output}")
+
+                    self._event_bus.publish(EventType.AUDIO_DEVICE_CHANGED, {
+                        "input_device": current_input,
+                        "output_device": current_output,
+                        "input_changed": input_changed,
+                        "output_changed": output_changed,
+                        "previous_input": self._last_input_device,
+                        "previous_output": self._last_output_device,
+                    })
+
+                    self._last_input_device = current_input
+                    self._last_output_device = current_output
+
+            except Exception as e:
+                logger.warning(f"Error in device monitor loop: {e}")
+
+            time.sleep(self._poll_interval)
 
 
 class AudioManager:
@@ -76,22 +172,55 @@ class AudioManager:
         self._silence_timeout_seconds: float = 5.0  # Auto-stop after 5 seconds of silence
         self._force_process_audio = threading.Event()  # Signal to process collected audio now
 
+        # Audio device monitor
+        self._device_monitor = AudioDeviceMonitor(event_bus, poll_interval=2.0)
+
         # Subscribe to relevant events
         self._event_bus.subscribe(EventType.STATE_CHANGED, self._on_state_changed)
         self._event_bus.subscribe(EventType.MESSAGE_RECEIVED, self._on_message_received)
         self._event_bus.subscribe(EventType.LISTENING_STOPPED, self._on_listening_stopped)
+        self._event_bus.subscribe(EventType.AUDIO_DEVICE_CHANGED, self._on_audio_device_changed)
+
+        # Start device monitoring
+        self._device_monitor.start()
         
     def _on_state_changed(self, event_data: dict) -> None:
-        """Handle application state changes."""
+        """Handle application state changes.
+
+        Note: This is called from a sync context (EventBus.publish),
+        so we need to safely schedule async tasks.
+        """
         new_state = event_data.get("new_state")
-        
+
         if new_state == AppState.LISTENING:
-            asyncio.create_task(self.start_listening())
+            self._schedule_async_task(self.start_listening())
         elif new_state == AppState.PLAYING_AUDIO:
             # Audio playback will be started via play_audio method
             pass
         elif new_state == AppState.IDLE:
-            asyncio.create_task(self.stop_all_audio())
+            self._schedule_async_task(self.stop_all_audio())
+
+    def _schedule_async_task(self, coro) -> None:
+        """Safely schedule an async task from sync or async context.
+
+        This handles the case where we're called from a sync callback
+        (like EventBus.publish) and need to run async code.
+        """
+        try:
+            # Try to get the running event loop
+            loop = asyncio.get_running_loop()
+            # We have a running loop, create task directly
+            loop.create_task(coro)
+        except RuntimeError:
+            # No running loop - need to run in a new thread with its own loop
+            def run_in_thread():
+                try:
+                    asyncio.run(coro)
+                except Exception as e:
+                    logger.error(f"Error running async task in thread: {e}")
+
+            thread = threading.Thread(target=run_in_thread, daemon=True)
+            thread.start()
             
     def _on_message_received(self, event_data: dict) -> None:
         """Handle incoming messages and trigger TTS for assistant responses."""
@@ -101,7 +230,7 @@ class AudioManager:
         if role == "assistant" and content:
             # Trigger TTS for assistant responses
             logger.info(f"Processing assistant response for TTS: {content[:50]}...")
-            asyncio.create_task(self.synthesize_and_play(content))
+            self._schedule_async_task(self.synthesize_and_play(content))
 
     def _on_listening_stopped(self, event_data: dict) -> None:
         """Handle user request to stop listening and process collected audio."""
@@ -111,13 +240,43 @@ class AudioManager:
         self._force_process_audio.set()
         self._stop_listening.set()
 
+    def _on_audio_device_changed(self, event_data: dict) -> None:
+        """Handle system audio device changes."""
+        input_changed = event_data.get("input_changed", False)
+        output_changed = event_data.get("output_changed", False)
+        new_input = event_data.get("input_device")
+        new_output = event_data.get("output_device")
+
+        logger.info(f"Audio device changed - Input: {new_input}, Output: {new_output}")
+
+        # If we're currently listening and input device changed, restart the stream
+        if input_changed and self._audio_state == AudioState.LISTENING:
+            logger.info("Input device changed while listening - restarting audio capture")
+            # Close current input stream
+            if self._input_stream:
+                try:
+                    self._input_stream.close()
+                    self._input_stream = None
+                except Exception as e:
+                    logger.warning(f"Error closing input stream: {e}")
+
+            # The stream will be recreated on next listen iteration
+
+        # If we're currently playing and output device changed, we may need to handle it
+        # sounddevice typically handles this automatically, but log for debugging
+        if output_changed and self._audio_state == AudioState.PLAYING:
+            logger.info("Output device changed while playing - audio may switch automatically")
+
     async def start_listening(self) -> None:
-        """Start listening for voice input."""
+        """Start listening for voice input.
+
+        This method runs the listen loop and blocks until listening stops.
+        """
         if self._microphone_muted:
             logger.warning("Cannot start listening: microphone is muted")
             return
 
-        if self._listening_task and not self._listening_task.done():
+        if self._audio_state == AudioState.LISTENING:
             logger.warning("Already listening")
             return
 
@@ -130,32 +289,37 @@ class AudioManager:
 
         self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "listening"})
 
-        # Start listening task
-        self._listening_task = asyncio.create_task(self._listen_loop())
+        # Run the listen loop directly (await it so it doesn't exit immediately)
+        # This is important when running via asyncio.run() in a thread
+        await self._listen_loop()
         
     async def stop_all_audio(self) -> None:
         """Stop all audio operations."""
         logger.info("Stopping all audio operations...")
-        
+
+        # Stop device monitor
+        if self._device_monitor:
+            self._device_monitor.stop()
+
         # Stop listening
         self._stop_listening.set()
         if self._listening_task and not self._listening_task.done():
             self._listening_task.cancel()
-            
+
         # Stop playback
         self._playback_cancelled.set()
         if self._playback_task and not self._playback_task.done():
             self._playback_task.cancel()
-            
+
         # Close audio streams
         if self._input_stream:
             self._input_stream.close()
             self._input_stream = None
-            
+
         if self._output_stream:
             self._output_stream.close()
             self._output_stream = None
-            
+
         self._audio_state = AudioState.IDLE
         self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "idle"})
         

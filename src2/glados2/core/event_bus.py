@@ -11,6 +11,7 @@ class EventType(Enum):
     STATE_CHANGED = "state_changed"
     MESSAGE_RECEIVED = "message_received"
     AUDIO_STATUS_CHANGED = "audio_status_changed"
+    AUDIO_DEVICE_CHANGED = "audio_device_changed"  # System audio device changed
     LLM_RESPONSE_STARTED = "llm_response_started"
     LLM_RESPONSE_CHUNK = "llm_response_chunk"
     LLM_RESPONSE_COMPLETED = "llm_response_completed"
