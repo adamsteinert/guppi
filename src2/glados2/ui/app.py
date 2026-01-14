@@ -63,21 +63,22 @@ class HelpScreen(ModalScreen[None]):
         help_text = """
 [bold]GLaDOS 2.0 - Help[/bold]
 
-[yellow]Text Input:[/yellow]
-• Type in the input field at the bottom
-• Press [bold]Enter[/bold] to send your message
-• Text input is the default mode
+[yellow]Command Mode (Default):[/yellow]
+Use single keys to control GLaDOS:
+• [bold]P[/bold] - Enter text input mode
+• [bold]L[/bold] - Start/Stop voice listening
+• [bold]I[/bold] - Interrupt current response
+• [bold]T[/bold] - Toggle debug view
+• [bold]M[/bold] - Toggle microphone mute
+• [bold]S[/bold] - Toggle speaker mute
+• [bold]H[/bold] - Show this help
+• [bold]Q[/bold] - Quit application
 
-[yellow]Key Bindings:[/yellow]
-• [bold]Cmd+L[/bold] - Start/Stop voice listening
-• [bold]Cmd+I[/bold] - Interrupt current response
-• [bold]Cmd+Q[/bold] - Quit application
-• [bold]Cmd+H[/bold] - Show this help
-• [bold]Cmd+T[/bold] - Toggle debug view
-
-[yellow]Audio Controls:[/yellow]
-• [bold]Cmd+M[/bold] - Toggle microphone mute
-• [bold]Cmd+S[/bold] - Toggle speaker mute
+[yellow]Text Input Mode:[/yellow]
+• Press [bold]P[/bold] in command mode to start typing
+• Type your message normally
+• Press [bold]Enter[/bold] to send message
+• Press [bold]Esc[/bold] to return to command mode
 
 [yellow]Status Indicators:[/yellow]
 • [green]Listening[/green] - Waiting for your voice
@@ -111,13 +112,14 @@ class GladosUI(App[None]):
     SUB_TITLE = "Stable Voice Assistant"
     
     BINDINGS: ClassVar = [
-        Binding("cmd+q", "quit", "Quit"),
-        Binding("cmd+h", "help", "Help"),
-        Binding("cmd+l", "toggle_listening", "Listen"),
-        Binding("cmd+i", "interrupt", "Interrupt"),
-        Binding("cmd+m", "toggle_microphone", "Mic"),
-        Binding("cmd+s", "toggle_speaker", "Speaker"),
-        Binding("cmd+t", "toggle_debug", "Debug"),
+        Binding("q", "quit", "Quit", show=True),
+        Binding("h", "help", "Help", show=True),
+        Binding("l", "toggle_listening", "Listen", show=True),
+        Binding("i", "interrupt", "Interrupt", show=True),
+        Binding("m", "toggle_microphone", "Mic", show=True),
+        Binding("s", "toggle_speaker", "Speaker", show=True),
+        Binding("t", "toggle_debug", "Debug", show=True),
+        Binding("p", "enter_text_mode", "Type", show=True),
     ]
     
     CSS = """
@@ -148,6 +150,10 @@ class GladosUI(App[None]):
 
     #message_input {
         width: 1fr;
+    }
+
+    #message_input:disabled {
+        opacity: 0.6;
     }
 
     #status_area {
@@ -184,6 +190,7 @@ class GladosUI(App[None]):
         self._message_input: Optional[Input] = None
         self._show_debug = False
         self._logger_sink_id = None
+        self._text_input_mode = False  # Track if we're in text input mode
 
         # Managers will be injected by main app
         self._audio_manager = None
@@ -211,8 +218,9 @@ class GladosUI(App[None]):
                 # Text input at bottom
                 with Container(id="input_container"):
                     self._message_input = Input(
-                        placeholder="Type your message here and press Enter...",
-                        id="message_input"
+                        placeholder="Press 'P' to type a message...",
+                        id="message_input",
+                        disabled=True
                     )
                     yield self._message_input
 
@@ -238,14 +246,14 @@ class GladosUI(App[None]):
     def on_mount(self) -> None:
         """Initialize the application after mounting."""
         # Remove default logger handlers to prevent terminal output
-        #logger.remove()
+        logger.remove()
 
-        # Add custom logger sink to capture log output (only to debug widget)
+        # Add custom logger sink to capture log output (all levels to debug widget)
         self._logger_sink_id = logger.add(
             self._logger_sink,
             format="<level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
             colorize=True,
-            level="DEBUG"
+            level=0  # Capture all log levels (TRACE and above)
         )
 
         logger.info("GLaDOS 2.0 UI starting...")
@@ -253,9 +261,10 @@ class GladosUI(App[None]):
         # Initialize state
         self._state_manager.set_state(AppState.INITIALIZING)
 
-        # Focus the input field by default
+        # Start in command mode (don't focus input field)
+        self._text_input_mode = False
         if self._message_input:
-            self._message_input.focus()
+            self._message_input.disabled = True
 
         # Start background services (stubbed for now)
         self.call_later(self._initialize_services)
@@ -331,9 +340,17 @@ class GladosUI(App[None]):
             self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "ready"})
             logger.info("Stopped listening")
             
+    def on_key(self, event: events.Key) -> None:
+        """Handle key presses globally."""
+        # Handle Escape in text input mode
+        if event.key == "escape" and self._text_input_mode:
+            self._exit_text_mode()
+            event.prevent_default()
+            event.stop()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle Enter key in input field."""
-        if event.input.id == "message_input":
+        if event.input.id == "message_input" and self._text_input_mode:
             message = event.value.strip()
             if message and self._message_input:
                 # Clear the input
@@ -351,6 +368,9 @@ class GladosUI(App[None]):
                 })
 
                 logger.info(f"User text message: {message}")
+
+                # Exit text input mode after sending
+                self._exit_text_mode()
 
     def action_interrupt(self) -> None:
         """Interrupt current operation."""
@@ -378,6 +398,28 @@ class GladosUI(App[None]):
                 self._conversation_log.add_message("system", f"Speaker {status}")
         logger.info("Speaker toggle requested")
         
+    def action_enter_text_mode(self) -> None:
+        """Enter text input mode."""
+        if not self._text_input_mode:
+            self._text_input_mode = True
+            if self._message_input:
+                self._message_input.disabled = False
+                self._message_input.focus()
+                # Update placeholder to show mode
+                self._message_input.placeholder = "Type message (Enter to send, Esc to cancel)..."
+            logger.info("Entered text input mode")
+
+    def _exit_text_mode(self) -> None:
+        """Exit text input mode and return to command mode."""
+        if self._text_input_mode:
+            self._text_input_mode = False
+            if self._message_input:
+                self._message_input.value = ""  # Clear any typed text
+                self._message_input.disabled = True
+                self._message_input.blur()
+                self._message_input.placeholder = "Press 'P' to type a message..."
+            logger.info("Exited text input mode")
+
     def action_toggle_debug(self) -> None:
         """Toggle between conversation and debug view."""
         self._show_debug = not self._show_debug

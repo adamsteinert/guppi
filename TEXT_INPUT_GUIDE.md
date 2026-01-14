@@ -1,54 +1,60 @@
-# GLaDOS 2.0 Text Input Mode
+# GLaDOS 2.0 Interaction Guide
 
 ## Overview
-GLaDOS 2.0 now supports text input as the default interaction mode, with voice commands accessible via keyboard shortcuts.
+GLaDOS 2.0 uses a dual-mode interface optimized for terminal use: **Command Mode** and **Text Input Mode**.
 
-## Text Input
-- **Default Mode**: Text input is active by default when you start the application
-- **How to Use**: Simply type your message in the input field at the bottom of the screen
-- **Send Message**: Press `Enter` to send your message to GLaDOS
-- **Input Field**: Automatically focused on startup for immediate typing
+## Command Mode (Default)
 
-## Updated Key Bindings
+When you start GLaDOS, you're in **Command Mode**. Use single keystrokes to control the application:
 
-All control commands now use **Cmd+** (Command key) combinations to avoid conflicts with text input:
+### Main Commands
+- **P** - Enter text input mode (to type messages)
+- **L** - Start/Stop voice listening
+- **I** - Interrupt current response
+- **T** - Toggle debug view
+- **M** - Toggle microphone mute
+- **S** - Toggle speaker mute
+- **H** - Show help screen
+- **Q** - Quit application
 
-### Main Controls
-- **Cmd+Q** - Quit application
-- **Cmd+H** - Show help screen
-- **Cmd+I** - Interrupt current response
-- **Cmd+T** - Toggle debug view
+## Text Input Mode
 
-### Voice Controls
-- **Cmd+L** - Start/Stop voice listening mode
-- **Cmd+M** - Toggle microphone mute
-- **Cmd+S** - Toggle speaker mute
+Press **P** in command mode to enter text input mode:
 
-### Navigation
-- **Esc** - Close help screen (when open)
-- **Enter** - Send typed message (in text input field)
+### In Text Input Mode:
+- Type your message normally (all keys work as expected)
+- Press **Enter** to send your message to GLaDOS
+- Press **Esc** to cancel and return to command mode
+- After sending a message, you automatically return to command mode
+
+### Visual Indicator:
+- Input field is **dimmed** in command mode
+- Input field is **bright** and active in text input mode
+- Placeholder text shows current mode
 
 ## Usage Examples
 
-### Text Interaction (Default)
+### Text Interaction Workflow
 1. Start GLaDOS: `./run_glados2.sh`
-2. Type your message in the input field
-3. Press `Enter` to send
-4. GLaDOS will respond with streaming text
-5. Continue the conversation by typing more messages
+2. You're in command mode (input is dimmed)
+3. Press **P** to enter text input mode
+4. Type your message
+5. Press **Enter** to send (automatically returns to command mode)
+6. GLaDOS will respond with streaming text
+7. Press **P** again for your next message
 
-### Voice Interaction
-1. Press `Cmd+L` to start voice listening
+### Voice Interaction Workflow
+1. In command mode, press **L** to start listening
 2. Speak your message
-3. Press `Cmd+L` again to stop listening (or wait for automatic detection)
+3. Press **L** again to stop listening (or wait for automatic detection)
 4. GLaDOS will transcribe and respond
 
 ### Mixed Mode
 You can freely switch between text and voice:
-- Type messages when convenient
-- Use `Cmd+L` for voice when hands-free
-- Interrupt long responses with `Cmd+I`
-- Mute microphone with `Cmd+M` when not using voice
+- Press **P** for text messages
+- Press **L** for voice messages
+- Press **I** to interrupt long responses
+- Press **M** to mute microphone when not using voice
 
 ## Status Indicators
 
@@ -59,7 +65,7 @@ The right panel shows real-time status:
 
 ## Debug View
 
-Press **Cmd+T** to toggle between conversation view and debug view:
+Press **T** in command mode to toggle between conversation and debug view:
 - **Conversation View** (default): Shows your chat with GLaDOS
 - **Debug View**: Shows real-time event logging including:
   - State changes (INITIALIZING → IDLE → LISTENING, etc.)
@@ -67,7 +73,7 @@ Press **Cmd+T** to toggle between conversation view and debug view:
   - Audio status changes (listening, processing, speaking)
   - LLM response chunks (streaming text)
   - Service initialization events
-  - User actions (keyboard shortcuts, button clicks)
+  - User actions (keyboard shortcuts, mode changes)
 
 The debug view is useful for:
 - Troubleshooting issues
@@ -77,12 +83,14 @@ The debug view is useful for:
 
 ## Tips
 
-1. **Text is Default**: No need to enable anything - just start typing
-2. **Quick Help**: Press `Cmd+H` anytime to see all key bindings
-3. **Safe Interruption**: Use `Cmd+I` to stop long responses
-4. **Voice Optional**: Voice features are completely optional
-5. **Conversation Flow**: Both text and voice messages appear in the same conversation log
-6. **Debug Mode**: Press `Cmd+T` to see what's happening under the hood
+1. **Command Mode First**: You start in command mode - use single keys for commands
+2. **P for Typing**: Press 'P' to type a message, Enter to send, Esc to cancel
+3. **Quick Help**: Press 'H' anytime to see all key bindings
+4. **Safe Interruption**: Press 'I' to stop long responses
+5. **Voice Optional**: Voice features are completely optional (press 'L')
+6. **Conversation Flow**: Both text and voice messages appear in the same log
+7. **Debug Mode**: Press 'T' to see what's happening under the hood
+8. **Terminal Friendly**: No modifier keys needed - works great in any terminal
 
 ## Running the Application
 
