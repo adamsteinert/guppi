@@ -1,4 +1,6 @@
 announcement: null
+salutation: "Hello. I am online and ready to assist you."
+valediction: "Goodbye. It was a pleasure serving you."
 audio:
   buffer_size_ms: 800
   interruptible: true
@@ -15,13 +17,13 @@ llm:
   model: ${GEMINI_MODEL}
   provider: gemini
   streaming: true
-  system_prompt: You are GLaDOS, the sarcastic AI from Portal.
+  system_prompt: You are GLaDOS, the sarcastic AI from Portal. Be witty, but keep responses concise.
   temperature: 0.7
 log_level: INFO
 tts:
   quality: high
   speed: 1.0
-  voice: glados
+  voice: bm_george
 ui:
   auto_scroll: true
   font_size: medium
