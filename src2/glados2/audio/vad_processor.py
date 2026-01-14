@@ -19,11 +19,19 @@ except ImportError:
 class VADProcessor:
     """
     Voice Activity Detection processor using Silero VAD model.
-    
+
     Processes audio chunks to detect speech activity with configurable
     thresholds and buffering.
     """
-    
+
+    # Silero VAD v5 requires specific window sizes based on sample rate
+    # For 16kHz: 512 samples (32ms)
+    # For 8kHz: 256 samples (32ms)
+    SILERO_WINDOW_SIZES = {
+        16000: 512,
+        8000: 256,
+    }
+
     def __init__(
         self,
         model_path: str = "models/ASR/silero_vad_v5.onnx",
@@ -36,17 +44,22 @@ class VADProcessor:
         self.threshold = threshold
         self.min_speech_duration_ms = min_speech_duration_ms
         self.min_silence_duration_ms = min_silence_duration_ms
-        
-        # Audio processing
-        self.window_size_samples = int(sample_rate * 0.032)  # 32ms windows
+
+        # Audio processing - use Silero's required window size
+        self.window_size_samples = self.SILERO_WINDOW_SIZES.get(sample_rate, 512)
         self.audio_buffer = deque(maxlen=int(sample_rate * 0.8))  # 800ms buffer
-        
+
         # State tracking
         self.is_speech_active = False
         self.speech_start_time: Optional[float] = None
         self.last_speech_time: Optional[float] = None
         self.collected_audio = []
-        
+
+        # Silero VAD model state (required for stateful inference)
+        # The model uses internal LSTM state that must persist between calls
+        self._vad_state: Optional[np.ndarray] = None
+        self._vad_sr: Optional[np.ndarray] = None
+
         # Load VAD model
         self.session: Optional[ort.InferenceSession] = None
         self._load_model(model_path)
@@ -56,13 +69,25 @@ class VADProcessor:
         if not ort:
             logger.warning("ONNX Runtime not available, using fallback VAD")
             return
-            
+
         try:
             self.session = ort.InferenceSession(
                 model_path,
-                providers=['CPUExecutionProvider']  # Start with CPU, can upgrade to GPU
+                providers=['CPUExecutionProvider']
             )
             logger.info(f"Loaded VAD model from {model_path}")
+
+            # Log model inputs for debugging
+            for inp in self.session.get_inputs():
+                logger.debug(f"VAD model input: {inp.name}, shape: {inp.shape}, type: {inp.type}")
+
+            # Initialize Silero VAD state
+            # Silero VAD v5 requires: input (audio), state (2, 1, 128), sr (sample rate)
+            self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
+            self._vad_sr = np.array([self.sample_rate], dtype=np.int64)
+
+            logger.info(f"Initialized VAD state for sample rate {self.sample_rate}")
+
         except Exception as e:
             logger.error(f"Failed to load VAD model: {e}")
             self.session = None
@@ -157,21 +182,29 @@ class VADProcessor:
         else:
             # Take first window_size_samples
             audio_data = audio_data[:self.window_size_samples]
-            
-        # Normalize audio to [-1, 1] range
+
+        # Ensure float32 type
         audio_data = audio_data.astype(np.float32)
-        if np.max(np.abs(audio_data)) > 0:
-            audio_data = audio_data / np.max(np.abs(audio_data))
-            
-        # Reshape for ONNX model input
+
+        # Reshape for ONNX model input: (batch, samples)
         input_tensor = audio_data.reshape(1, -1)
-        
+
+        # Build inputs dict with all required inputs for Silero VAD v5
+        # Required inputs: input (audio), state (LSTM state), sr (sample rate)
+        inputs = {
+            "input": input_tensor,
+            "state": self._vad_state,
+            "sr": self._vad_sr,
+        }
+
         # Run inference
-        inputs = {self.session.get_inputs()[0].name: input_tensor}
-        output = self.session.run(None, inputs)
-        
-        # Extract speech probability
-        speech_prob = float(output[0][0][0])  # Model-specific output format
+        outputs = self.session.run(None, inputs)
+
+        # Silero VAD v5 outputs: [probability, new_state]
+        # Update state for next call (stateful model)
+        speech_prob = float(outputs[0].item())
+        self._vad_state = outputs[1]  # Update LSTM state for next inference
+
         return speech_prob
         
     def _energy_based_vad(self, audio_data: np.ndarray) -> float:
@@ -198,6 +231,9 @@ class VADProcessor:
         self.last_speech_time = None
         self.collected_audio.clear()
         self.audio_buffer.clear()
+        # Reset Silero VAD internal state
+        if self._vad_state is not None:
+            self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
         logger.debug("VAD processor reset")
         
     def get_status(self) -> dict:

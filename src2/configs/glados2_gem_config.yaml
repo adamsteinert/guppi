@@ -23,7 +23,7 @@ log_level: INFO
 tts:
   quality: high
   speed: 1.0
-  voice: bm_george
+  voice: glados
 ui:
   auto_scroll: true
   font_size: medium

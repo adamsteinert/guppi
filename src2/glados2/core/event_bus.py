@@ -19,6 +19,7 @@ class EventType(Enum):
     AUDIO_PLAYBACK_STARTED = "audio_playback_started"
     AUDIO_PLAYBACK_COMPLETED = "audio_playback_completed"
     INTERRUPT_REQUESTED = "interrupt_requested"
+    LISTENING_STOPPED = "listening_stopped"  # User stopped listening, process collected audio
     ERROR_OCCURRED = "error_occurred"
     SHUTDOWN_REQUESTED = "shutdown_requested"
 

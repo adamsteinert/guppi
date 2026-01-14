@@ -4,6 +4,7 @@ import asyncio
 from typing import Optional, Callable
 from enum import Enum
 import threading
+import time
 import numpy as np
 
 from loguru import logger
@@ -69,10 +70,16 @@ class AudioManager:
         # Control flags
         self._stop_listening = threading.Event()
         self._playback_cancelled = threading.Event()
-        
+
+        # Listening state tracking
+        self._last_audio_time: float = 0.0
+        self._silence_timeout_seconds: float = 5.0  # Auto-stop after 5 seconds of silence
+        self._force_process_audio = threading.Event()  # Signal to process collected audio now
+
         # Subscribe to relevant events
         self._event_bus.subscribe(EventType.STATE_CHANGED, self._on_state_changed)
         self._event_bus.subscribe(EventType.MESSAGE_RECEIVED, self._on_message_received)
+        self._event_bus.subscribe(EventType.LISTENING_STOPPED, self._on_listening_stopped)
         
     def _on_state_changed(self, event_data: dict) -> None:
         """Handle application state changes."""
@@ -90,29 +97,39 @@ class AudioManager:
         """Handle incoming messages and trigger TTS for assistant responses."""
         role = event_data.get("role")
         content = event_data.get("content")
-        
+
         if role == "assistant" and content:
             # Trigger TTS for assistant responses
             logger.info(f"Processing assistant response for TTS: {content[:50]}...")
             asyncio.create_task(self.synthesize_and_play(content))
-            
+
+    def _on_listening_stopped(self, event_data: dict) -> None:
+        """Handle user request to stop listening and process collected audio."""
+        reason = event_data.get("reason", "unknown")
+        logger.info(f"Listening stopped: {reason}")
+        # Signal the listen loop to process any collected audio immediately
+        self._force_process_audio.set()
+        self._stop_listening.set()
+
     async def start_listening(self) -> None:
         """Start listening for voice input."""
         if self._microphone_muted:
             logger.warning("Cannot start listening: microphone is muted")
             return
-            
+
         if self._listening_task and not self._listening_task.done():
             logger.warning("Already listening")
             return
-            
+
         logger.info("Starting audio listening...")
         self._audio_state = AudioState.LISTENING
         self._stop_listening.clear()
+        self._force_process_audio.clear()
+        self._last_audio_time = time.time()
         self._vad.reset()
-        
+
         self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "listening"})
-        
+
         # Start listening task
         self._listening_task = asyncio.create_task(self._listen_loop())
         
@@ -146,11 +163,11 @@ class AudioManager:
         """Main audio listening loop with VAD and ASR processing."""
         try:
             logger.info("Starting audio capture...")
-            
+
             # Audio callback for input stream
             audio_queue = asyncio.Queue()
-            
-            def audio_callback(indata, frames, time, status):
+
+            def audio_callback(indata, frames, time_info, status):
                 if status:
                     logger.warning(f"Audio input status: {status}")
                 # Convert to numpy array and put in queue
@@ -159,7 +176,7 @@ class AudioManager:
                     audio_queue.put_nowait(audio_data.astype(np.float32))
                 except asyncio.QueueFull:
                     pass  # Drop frame if queue is full
-                    
+
             # Start input stream
             self._input_stream = sd.InputStream(
                 samplerate=self._sample_rate,
@@ -169,34 +186,84 @@ class AudioManager:
                 callback=audio_callback
             )
             self._input_stream.start()
-            
+
             logger.info("Audio capture started, waiting for speech...")
-            
+
             # Process audio chunks
             while not self._stop_listening.is_set():
                 try:
                     # Get audio chunk with timeout
                     audio_chunk = await asyncio.wait_for(audio_queue.get(), timeout=0.1)
-                    
+
+                    # Update last audio time when we receive audio
+                    current_time = time.time()
+
                     # Process with VAD
                     is_voice, completed_audio = self._vad.process_audio_chunk(audio_chunk)
-                    
+
+                    if is_voice:
+                        # Voice detected, update the timer
+                        self._last_audio_time = current_time
+
                     if completed_audio is not None:
                         logger.info("Speech segment detected, transcribing...")
                         await self._process_speech_segment(completed_audio)
-                        
+                        # Reset timer after processing
+                        self._last_audio_time = time.time()
+
+                    # Check for silence timeout (5 seconds without voice)
+                    silence_duration = current_time - self._last_audio_time
+                    if silence_duration >= self._silence_timeout_seconds:
+                        logger.info(f"Silence timeout ({self._silence_timeout_seconds}s) - stopping listening")
+                        # Process any collected audio before stopping
+                        if self._vad.collected_audio:
+                            collected = np.concatenate(self._vad.collected_audio)
+                            if len(collected) > self._sample_rate * 0.25:  # At least 250ms
+                                logger.info("Processing collected audio before timeout stop")
+                                await self._process_speech_segment(collected)
+                        self._stop_listening.set()
+                        self._state_manager.set_state(AppState.IDLE)
+                        self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "ready"})
+                        break
+
                 except asyncio.TimeoutError:
+                    # Check for force process signal (user pressed 'l' to stop)
+                    if self._force_process_audio.is_set():
+                        logger.info("Force processing collected audio")
+                        if self._vad.collected_audio:
+                            collected = np.concatenate(self._vad.collected_audio)
+                            if len(collected) > self._sample_rate * 0.1:  # At least 100ms
+                                await self._process_speech_segment(collected)
+                        self._force_process_audio.clear()
+                        break
+
+                    # Also check silence timeout during timeouts
+                    current_time = time.time()
+                    silence_duration = current_time - self._last_audio_time
+                    if silence_duration >= self._silence_timeout_seconds:
+                        logger.info(f"Silence timeout during wait ({self._silence_timeout_seconds}s)")
+                        if self._vad.collected_audio:
+                            collected = np.concatenate(self._vad.collected_audio)
+                            if len(collected) > self._sample_rate * 0.25:
+                                await self._process_speech_segment(collected)
+                        self._stop_listening.set()
+                        self._state_manager.set_state(AppState.IDLE)
+                        self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "ready"})
+                        break
+
                     continue  # Check stop flag
+
                 except Exception as e:
                     logger.error(f"Error in listen loop: {e}")
                     break
-                    
+
         except Exception as e:
             logger.error(f"Audio listening error: {e}")
         finally:
             if self._input_stream:
                 self._input_stream.close()
                 self._input_stream = None
+            self._vad.reset()
             logger.info("Audio listening stopped")
             
     async def _process_speech_segment(self, audio_data: np.ndarray) -> None:
