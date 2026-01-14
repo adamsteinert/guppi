@@ -66,6 +66,8 @@ class TTSProcessor:
 
         # Kokoro specific components
         self.voice_embeddings: dict = {}  # Voice name -> embedding mapping
+        self.kokoro_vocab = self._build_kokoro_vocab()  # IPA-based vocabulary
+        self.kokoro_sample_rate = 24000  # Kokoro uses 24kHz
 
         # GLaDOS constants
         self.PAD = "_"
@@ -152,6 +154,19 @@ class TTSProcessor:
                 logger.info(f"Loaded Phonemizer model from {phonemizer_path}")
             except Exception as e:
                 logger.error(f"Failed to load Phonemizer model: {e}")
+
+    def _build_kokoro_vocab(self) -> dict:
+        """Build phoneme-to-ID mapping for Kokoro TTS (matches original implementation)."""
+        _pad = "$"
+        _punctuation = ';:,.!?¡¿—…"«»"" '
+        _letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+        _letters_ipa = "ɑɐɒæɓʙβɔɕçɗɖðʤəɘɚɛɜɝɞɟʄɡɠɢʛɦɧħɥʜɨɪʝɭɬɫɮʟɱɯɰŋɳɲɴøɵɸθœɶʘɹɺɾɻʀʁɽʂʃʈʧʉʊʋⱱʌɣɤʍχʎʏʑʐʒʔʡʕʢǀǁǂǃˈˌːˑʼʴʰʱʲʷˠˤ˞↓↑→↗↘'̩'ᵻ"
+
+        symbols = [_pad, *_punctuation, *_letters, *_letters_ipa]
+        vocab = {}
+        for i in range(len(symbols)):
+            vocab[symbols[i]] = i
+        return vocab
 
     def _load_voice_embeddings(self, voices_path: Path) -> None:
         """Load Kokoro voice embeddings from ZIP file."""
@@ -279,61 +294,79 @@ class TTSProcessor:
             return None
             
     def _kokoro_synthesize(self, text: str, voice: str) -> Optional[np.ndarray]:
-        """Synthesize using Kokoro model."""
+        """Synthesize using Kokoro model (matches original implementation)."""
         try:
-            # First, convert text to phonemes if phonemizer is available
-            phonemes = text  # Default fallback
-            if self.phonemizer_session:
-                phonemes = self._text_to_phonemes(text)
+            # Step 1: Convert text to phonemes using the real phonemizer
+            if self.phonemizer:
+                phonemes_list = self.phonemizer.convert_to_phonemes([text], "en_us")
+                phonemes = phonemes_list[0] if phonemes_list else ""
+                logger.debug(f"Phonemes: {phonemes[:100]}...")
+            else:
+                logger.warning("Phonemizer not available for Kokoro")
+                phonemes = text
 
             if self._cancelled.is_set():
                 return None
 
-            # Preprocess for Kokoro model
-            processed_input = self._preprocess_text_kokoro(phonemes, voice)
+            # Step 2: Convert phonemes to IDs using Kokoro vocabulary
+            ids = self._phonemes_to_ids_kokoro(phonemes)
+            logger.debug(f"Phoneme IDs ({len(ids)}): {ids[:20]}...")
+
+            if len(ids) == 0:
+                logger.error("No phoneme IDs generated")
+                return None
 
             if self._cancelled.is_set():
                 return None
 
-            # Run Kokoro TTS inference
-            input_names = [inp.name for inp in self.kokoro_session.get_inputs()]
-            logger.debug(f"Kokoro model inputs: {input_names}")
+            # Step 3: Wrap tokens with BOS/EOS markers (0, *ids, 0)
+            tokens = [[0, *ids, 0]]
 
-            # Log expected shapes for debugging
-            for inp in self.kokoro_session.get_inputs():
-                logger.debug(f"Input '{inp.name}' expects shape: {inp.shape}, type: {inp.type}")
+            # Step 4: Get voice embedding for THIS LENGTH of phonemes
+            voice_array = self._get_voice_embedding(voice, len(ids))
 
-            inputs = {}
+            # Step 5: Run Kokoro TTS inference
+            speed = 1.0
+            outputs = self.kokoro_session.run(
+                None,
+                {
+                    "tokens": tokens,
+                    "style": voice_array,
+                    "speed": np.ones(1, dtype=np.float32) * speed,
+                },
+            )
 
-            # Map inputs by name (Kokoro expects: tokens, style, speed)
-            for input_name in input_names:
-                if input_name == 'tokens':
-                    inputs[input_name] = processed_input
-                    logger.debug(f"Tokens shape: {processed_input.shape}")
-                elif input_name == 'style':
-                    # Get voice embedding (already shaped as (1, 256))
-                    style_embedding = self._get_voice_embedding(voice)
-                    inputs[input_name] = style_embedding
-                    logger.debug(f"Style shape: {style_embedding.shape}")
-                elif input_name == 'speed':
-                    # Speed factor (1.0 = normal speed)
-                    inputs[input_name] = np.array([1.0], dtype=np.float32)
-                else:
-                    logger.warning(f"Unknown Kokoro input: {input_name}")
-
-            outputs = self.kokoro_session.run(None, inputs)
-            
             if self._cancelled.is_set():
                 return None
-                
-            # Extract audio from outputs
-            audio_data = self._extract_audio_kokoro(outputs)
-            logger.debug(f"Kokoro synthesis completed: {len(audio_data)} samples")
+
+            # Step 6: Extract and trim audio
+            audio = outputs[0]
+            # Remove the last 1/3 of a second (8000 samples @ 24kHz), as kokoro adds silence
+            if len(audio) > 8000:
+                audio = audio[:-8000]
+
+            audio_data = np.array(audio, dtype=np.float32)
+            logger.debug(f"Kokoro synthesis completed: {len(audio_data)} samples @ {self.kokoro_sample_rate}Hz")
+
             return audio_data
-            
+
         except Exception as e:
             logger.error(f"Kokoro synthesis error: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return None
+
+    def _phonemes_to_ids_kokoro(self, phonemes: str) -> list[int]:
+        """Convert phoneme string to IDs using Kokoro vocabulary."""
+        if len(phonemes) > 510:  # MAX_PHONEME_LENGTH
+            logger.warning(f"Text too long ({len(phonemes)} phonemes), truncating to 510")
+            phonemes = phonemes[:510]
+
+        # Map each phoneme character to its ID, filtering out None values
+        ids = [self.kokoro_vocab.get(p) for p in phonemes]
+        ids = [i for i in ids if i is not None]
+
+        return ids
             
     def _fallback_synthesize(self, text: str, voice: str) -> np.ndarray:
         """
@@ -438,39 +471,97 @@ class TTSProcessor:
 
         return ids
         
-    def _preprocess_text_kokoro(self, text: str, voice: str) -> np.ndarray:
-        """Preprocess text for Kokoro model."""
-        # This is model-specific - adjust based on Kokoro model requirements
-        # Kokoro expects int64 tokens
-        encoded = np.array([ord(c) for c in text[:200]], dtype=np.int64)
-        return encoded.reshape(1, -1)
+    def _preprocess_text_kokoro(self, phoneme_tokens: np.ndarray, voice: str) -> np.ndarray:
+        """Preprocess phoneme tokens for Kokoro model."""
+        # phoneme_tokens is already a numpy array from _text_to_phonemes
+        # Ensure it's the right dtype and shape
+        if len(phoneme_tokens.shape) == 1:
+            phoneme_tokens = phoneme_tokens.reshape(1, -1)
+
+        return phoneme_tokens.astype(np.int64)
         
-    def _text_to_phonemes(self, text: str) -> str:
-        """Convert text to phonemes using phonemizer model."""
+    def _text_to_phonemes(self, text: str) -> np.ndarray:
+        """
+        Convert text to phoneme tokens using phonemizer model.
+
+        Returns:
+            numpy array of phoneme token IDs
+        """
         try:
-            # Simplified phonemizer - real implementation would use the ONNX model
-            # For now, return the original text as fallback
-            return text
+            if not self.phonemizer_session:
+                # Fallback: use character-to-ID mapping
+                logger.warning("Phonemizer not available, using character mapping")
+                return self._text_to_char_ids(text)
+
+            # Prepare input: pad or truncate to 64 characters
+            text_chars = list(text.lower()[:64])
+            # Pad with space if needed
+            while len(text_chars) < 64:
+                text_chars.append(' ')
+
+            # Convert characters to token IDs using vocabulary
+            char_ids = []
+            for c in text_chars:
+                if c in self.kokoro_char_vocab:
+                    char_ids.append(self.kokoro_char_vocab[c])
+                else:
+                    char_ids.append(self.kokoro_char_vocab[' '])  # Unknown → space
+
+            char_ids_array = np.array([char_ids], dtype=np.int64)
+
+            # Run phonemizer model
+            outputs = self.phonemizer_session.run(None, {'modelInput': char_ids_array})
+
+            # Output shape is [batch, seq_len, vocab_size]
+            # Get the most likely token for each position
+            phoneme_probs = outputs[0][0]  # [64, 64]
+            phoneme_ids = np.argmax(phoneme_probs, axis=-1)  # [64]
+
+            logger.debug(f"Phonemizer output shape: {phoneme_probs.shape}, token IDs: {phoneme_ids[:10]}")
+
+            return phoneme_ids
+
         except Exception as e:
             logger.error(f"Phonemizer error: {e}")
-            return text
+            # Fallback to simple character mapping
+            return self._text_to_char_ids(text)
+
+    def _text_to_char_ids(self, text: str) -> np.ndarray:
+        """Convert text to character IDs as fallback."""
+        text_lower = text.lower()[:64]
+        char_ids = []
+        for c in text_lower:
+            if c in self.kokoro_char_vocab:
+                char_ids.append(self.kokoro_char_vocab[c])
+            else:
+                char_ids.append(self.kokoro_char_vocab[' '])  # Unknown → space
+        # Pad to at least a reasonable length
+        while len(char_ids) < min(64, max(len(text), 35)):
+            char_ids.append(self.kokoro_char_vocab[' '])
+        return np.array(char_ids, dtype=np.int64)
             
-    def _get_voice_embedding(self, voice: str) -> np.ndarray:
-        """Get voice embedding for Kokoro model."""
+    def _get_voice_embedding(self, voice: str, phoneme_length: int) -> np.ndarray:
+        """
+        Get voice embedding for Kokoro model.
+
+        CRITICAL: The voice embedding is selected based on the LENGTH of the phoneme sequence!
+        The voice file contains 510 different style vectors, one for each possible phoneme length.
+        """
         if voice in self.voice_embeddings:
-            embedding = self.voice_embeddings[voice]
-            logger.debug(f"Loaded voice embedding for {voice}: shape {embedding.shape}")
+            voice_vector = self.voice_embeddings[voice]
+            logger.debug(f"Voice vector shape: {voice_vector.shape}, phoneme length: {phoneme_length}")
 
-            # Kokoro embeddings are (510, 1, 256), squeeze to (510, 256)
-            if len(embedding.shape) == 3 and embedding.shape[1] == 1:
-                embedding = embedding.squeeze(1)
+            # Kokoro embeddings are (510, 1, 256)
+            # Select the specific style vector for this phoneme length
+            if phoneme_length >= voice_vector.shape[0]:
+                logger.warning(f"Phoneme length {phoneme_length} exceeds voice vector size {voice_vector.shape[0]}, using last")
+                phoneme_length = voice_vector.shape[0] - 1
 
-            # Model expects (1, 256) - take mean of all 510 vectors
-            # This gives a single representative vector for the voice
-            embedding = np.mean(embedding, axis=0, keepdims=True)
-            logger.debug(f"Averaged voice embedding to: {embedding.shape}")
+            # Select voice array based on phoneme length (CRITICAL!)
+            voice_array = voice_vector[phoneme_length]  # Shape: (1, 256)
+            logger.debug(f"Selected voice array for length {phoneme_length}: {voice_array.shape}")
 
-            return embedding.astype(np.float32)
+            return voice_array.astype(np.float32)
         else:
             logger.warning(f"Voice embedding not found for '{voice}', using fallback")
             # Return a zero embedding as fallback
@@ -575,7 +666,9 @@ class TTSProcessor:
             "glados_loaded": self.glados_session is not None,
             "kokoro_loaded": self.kokoro_session is not None,
             "phonemizer_loaded": self.phonemizer_session is not None,
+            "phonemizer_available": self.phonemizer is not None,
             "current_voice": self.voice,
             "available_voices": self.get_available_voices(),
-            "sample_rate": self.sample_rate,
+            "glados_sample_rate": self.sample_rate,
+            "kokoro_sample_rate": self.kokoro_sample_rate,
         }
