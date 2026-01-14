@@ -19,7 +19,7 @@ async def main():
     # Get model info
     info = tts.get_model_info()
     print(f"Kokoro loaded: {info['kokoro_loaded']}")
-    print(f"Voice embeddings loaded: {len(tts.voice_embeddings)}")
+    print(f"Voice embeddings loaded: {info.get('kokoro_voices_count', 0)}")
 
     # Test synthesis
     text = "Hello, I am George. This is a test."
@@ -28,7 +28,9 @@ async def main():
     audio = await tts.synthesize_speech(text)
 
     if audio is not None:
-        print(f"✓ Success! Generated {len(audio)} samples ({len(audio)/22050:.2f}s)")
+        # Kokoro uses 24kHz sample rate
+        sample_rate = info.get('kokoro_sample_rate', 24000)
+        print(f"✓ Success! Generated {len(audio)} samples ({len(audio)/sample_rate:.2f}s @ {sample_rate}Hz)")
         print(f"✓ bm_george voice is working!")
         return 0
     else:

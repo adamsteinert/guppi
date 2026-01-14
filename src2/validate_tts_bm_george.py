@@ -57,7 +57,7 @@ async def test_tts_initialization():
     print_header("TEST 1: TTS Processor Initialization")
 
     tts = TTSProcessor(
-        voice="bm_george",
+        voice="glados",
         model_dir="models/TTS",
         sample_rate=22050
     )
@@ -123,8 +123,11 @@ async def test_synthesis_fallback(tts: TTSProcessor):
 
     if audio is not None:
         print_success("Synthesis completed")
+        # Use Kokoro sample rate if available
+        info = tts.get_model_info()
+        sample_rate = info.get('kokoro_sample_rate', tts.sample_rate)
         print_info(f"Audio samples: {len(audio)}")
-        print_info(f"Audio duration: {len(audio) / tts.sample_rate:.2f} seconds")
+        print_info(f"Audio duration: {len(audio) / sample_rate:.2f} seconds")
         print_info(f"Audio shape: {audio.shape}")
         print_info(f"Audio dtype: {audio.dtype}")
         print_info(f"Audio range: [{np.min(audio):.4f}, {np.max(audio):.4f}]")
@@ -167,8 +170,9 @@ async def test_synthesis_with_model(tts: TTSProcessor):
 
     if audio is not None:
         print_success("Real model synthesis completed")
+        sample_rate = info.get('kokoro_sample_rate', tts.sample_rate)
         print_info(f"Audio samples: {len(audio)}")
-        print_info(f"Audio duration: {len(audio) / tts.sample_rate:.2f} seconds")
+        print_info(f"Audio duration: {len(audio) / sample_rate:.2f} seconds")
         return audio
     else:
         print_error("Real model synthesis failed")
@@ -249,8 +253,12 @@ async def test_multiple_sentences(tts: TTSProcessor):
             print_error(f"  ✗ Failed")
 
     if all_audio:
+        # Use Kokoro sample rate if available
+        info = tts.get_model_info()
+        sample_rate = info.get('kokoro_sample_rate', tts.sample_rate)
+
         # Concatenate with small gaps
-        gap_samples = int(tts.sample_rate * 0.3)  # 300ms gap
+        gap_samples = int(sample_rate * 0.3)  # 300ms gap
         gap = np.zeros(gap_samples, dtype=np.float32)
 
         combined = []
@@ -261,7 +269,7 @@ async def test_multiple_sentences(tts: TTSProcessor):
         combined_audio = np.concatenate(combined[:-1])  # Remove last gap
 
         print_success(f"Combined {len(all_audio)} sentences")
-        print_info(f"Total duration: {len(combined_audio) / tts.sample_rate:.2f} seconds")
+        print_info(f"Total duration: {len(combined_audio) / sample_rate:.2f} seconds")
 
         return combined_audio
     else:
@@ -292,18 +300,22 @@ async def main():
     # Test 5: Multiple sentences
     multi_audio = await test_multiple_sentences(tts)
 
+    # Get correct sample rate for Kokoro
+    info = tts.get_model_info()
+    sample_rate = info.get('kokoro_sample_rate', tts.sample_rate)
+
     # Play audio samples
     if fallback_audio is not None:
-        await play_audio(fallback_audio, tts.sample_rate, "Fallback Synthesis")
-        await save_audio(fallback_audio, tts.sample_rate, "bm_george_fallback.wav")
+        await play_audio(fallback_audio, sample_rate, "Fallback Synthesis")
+        await save_audio(fallback_audio, sample_rate, "bm_george_fallback.wav")
 
     if model_audio is not None:
-        await play_audio(model_audio, tts.sample_rate, "Real Model Synthesis")
-        await save_audio(model_audio, tts.sample_rate, "bm_george_model.wav")
+        await play_audio(model_audio, sample_rate, "Real Model Synthesis")
+        await save_audio(model_audio, sample_rate, "bm_george_model.wav")
 
     if multi_audio is not None:
-        await play_audio(multi_audio, tts.sample_rate, "Multiple Sentences")
-        await save_audio(multi_audio, tts.sample_rate, "bm_george_multiple.wav")
+        await play_audio(multi_audio, sample_rate, "Multiple Sentences")
+        await save_audio(multi_audio, sample_rate, "bm_george_multiple.wav")
 
     # Final summary
     print_header("VALIDATION SUMMARY")

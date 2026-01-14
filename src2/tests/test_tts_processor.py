@@ -95,8 +95,8 @@ class TestTTSProcessor:
         assert "kokoro_loaded" in info
         assert "current_voice" in info
         assert "available_voices" in info
-        assert "sample_rate" in info
-        assert info["sample_rate"] == 22050
+        assert "default_sample_rate" in info
+        assert info["default_sample_rate"] == 22050
 
     def test_postprocess_audio_dc_removal(self, tts_processor):
         """Test audio post-processing removes DC offset."""
@@ -167,10 +167,10 @@ class TestTTSGLaDOSSpecific:
 
     def test_phonemes_to_ids(self, glados_tts):
         """Test phoneme to ID conversion."""
-        # If phoneme_to_id is loaded, test it
-        if glados_tts.phoneme_to_id:
+        # If glados_synthesizer is loaded with phoneme_to_id, test it
+        if glados_tts.glados_synthesizer and glados_tts.glados_synthesizer.phoneme_to_id:
             phonemes = "həˈloʊ"  # Example phonemes
-            ids = glados_tts._phonemes_to_ids(phonemes)
+            ids = glados_tts.glados_synthesizer._phonemes_to_ids(phonemes)
 
             assert isinstance(ids, list)
             # Should have BOS, phoneme IDs, and EOS
@@ -200,7 +200,7 @@ class TestTTSKokoroSpecific:
         # Check for some Kokoro voices
         kokoro_voices = ["bm_george", "bf_emma", "am_adam", "af_sky"]
         for voice in kokoro_voices:
-            if kokoro_tts.kokoro_session:
+            if kokoro_tts.kokoro_synthesizer:
                 assert voice in voices
 
     @pytest.mark.asyncio
@@ -213,7 +213,11 @@ class TestTTSKokoroSpecific:
 
     def test_voice_embedding_generation(self, kokoro_tts):
         """Test voice embedding generation."""
-        embedding = kokoro_tts._get_voice_embedding("bm_george")
+        if not kokoro_tts.kokoro_synthesizer:
+            pytest.skip("Kokoro synthesizer not loaded")
+
+        # Pass phoneme_length parameter (required for length-based embedding selection)
+        embedding = kokoro_tts.kokoro_synthesizer._get_voice_embedding("bm_george", phoneme_length=42)
 
         assert embedding is not None
         assert isinstance(embedding, np.ndarray)
@@ -234,7 +238,7 @@ class TestTTSIntegration:
         )
 
         # Skip if model not loaded
-        if not tts.glados_session:
+        if not tts.glados_synthesizer:
             pytest.skip("GLaDOS model not loaded")
 
         audio = await tts.synthesize_speech("Testing GLaDOS voice synthesis")
@@ -259,7 +263,7 @@ class TestTTSIntegration:
         )
 
         # Skip if model not loaded
-        if not tts.kokoro_session:
+        if not tts.kokoro_synthesizer:
             pytest.skip("Kokoro model not loaded")
 
         audio = await tts.synthesize_speech("Testing Kokoro voice synthesis with George")
@@ -271,7 +275,8 @@ class TestTTSIntegration:
 
         # Check audio characteristics
         assert np.max(np.abs(audio)) <= 1.0  # Normalized
-        assert len(audio) > tts.sample_rate * 0.5  # At least 0.5 seconds
+        # Kokoro uses 24kHz sample rate
+        assert len(audio) > tts.kokoro_synthesizer.sample_rate * 0.5  # At least 0.5 seconds
 
     @pytest.mark.asyncio
     @pytest.mark.integration
