@@ -441,17 +441,19 @@ class AudioManager:
             
             if transcription:
                 logger.info(f"Transcription: {transcription}")
-                
+
                 # Publish transcription event
+                # Note: LLM manager will handle state transition to CALLING_LLM
+                # when it receives this event and starts processing
                 self._event_bus.publish(EventType.MESSAGE_RECEIVED, {
                     "role": "user",
                     "content": transcription,
                     "audio_duration": len(audio_data) / self._sample_rate
                 })
-                
-                # Transition to LLM processing
-                self._state_manager.set_state(AppState.CALLING_LLM)
-                
+
+                # Stay in PROCESSING_AUDIO state - LLM manager will transition
+                # to CALLING_LLM when it starts processing the message
+
             else:
                 logger.warning("Transcription failed")
                 self._state_manager.set_state(AppState.IDLE)
