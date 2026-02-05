@@ -12,6 +12,7 @@ from .core.state_manager import StateManager, AppState
 from .audio.audio_manager import AudioManager
 from .llm.llm_manager import LLMManager, LLMProvider
 from .config.config_manager import ConfigManager, GladosConfig
+from .tools.tool_manager import ToolManager
 from .ui.app import GladosUI
 
 
@@ -54,7 +55,18 @@ class GladosApp:
             'tts_sample_rate': 22050,
         }
         self._audio_manager = AudioManager(self._event_bus, self._state_manager, audio_config)
-        self._llm_manager = LLMManager(self._event_bus, self._state_manager)
+
+        # Initialize tool manager if tools are enabled
+        self._tool_manager: Optional[ToolManager] = None
+        if self._config.tools.enabled:
+            self._tool_manager = ToolManager(self._event_bus, self._config.tools)
+
+        # Create LLM manager with tool manager
+        self._llm_manager = LLMManager(
+            self._event_bus,
+            self._state_manager,
+            tool_manager=self._tool_manager
+        )
 
         # Configure LLM manager from config
         self._llm_manager.configure_provider(
@@ -63,7 +75,8 @@ class GladosApp:
             completion_url=self._config.llm.completion_url,
             api_key=self._config.llm.api_key,
             temperature=self._config.llm.temperature,
-            max_tokens=self._config.llm.max_tokens
+            max_tokens=self._config.llm.max_tokens,
+            max_tool_iterations=self._config.tools.max_tool_iterations
         )
         self._llm_manager.set_system_prompt(self._config.llm.system_prompt)
 
@@ -78,6 +91,10 @@ class GladosApp:
         logger.info("Starting GLaDOS 2.0 with UI...")
 
         try:
+            # Initialize tool manager (connect to MCP servers)
+            if self._tool_manager:
+                asyncio.run(self._tool_manager.initialize())
+
             # Create UI with shared event bus (MUST be passed to constructor
             # so event subscriptions are registered on the shared bus)
             self._ui = GladosUI(event_bus=self._event_bus)
@@ -99,19 +116,23 @@ class GladosApp:
     async def run_headless(self) -> None:
         """Run the application without UI (for server/embedded use)."""
         logger.info("Starting GLaDOS 2.0 in headless mode...")
-        
+
         try:
+            # Initialize tool manager (connect to MCP servers)
+            if self._tool_manager:
+                await self._tool_manager.initialize()
+
             # Initialize components
             self._state_manager.set_state(AppState.IDLE)
-            
+
             # Main event loop
             while self._state_manager.get_state() != AppState.SHUTTING_DOWN:
                 await asyncio.sleep(0.1)
-                
+
         except KeyboardInterrupt:
             logger.info("Application interrupted by user")
         finally:
-            self._cleanup()
+            await self._cleanup_async()
             
     def _handle_shutdown(self, event_data: dict) -> None:
         """Handle shutdown request."""
@@ -119,7 +140,7 @@ class GladosApp:
         self._state_manager.set_state(AppState.SHUTTING_DOWN)
         
     def _cleanup(self) -> None:
-        """Clean up resources."""
+        """Clean up resources (sync version for UI mode)."""
         logger.info("Cleaning up GLaDOS 2.0...")
 
         # Cancel any ongoing operations
@@ -129,9 +150,36 @@ class GladosApp:
         if hasattr(self._llm_manager, 'cancel_current_request'):
             self._llm_manager.cancel_current_request()
 
+        # Clean up tool manager
+        if self._tool_manager:
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(self._tool_manager.cleanup())
+                loop.close()
+            except Exception as e:
+                logger.error(f"Error cleaning up tool manager: {e}")
+
         # Speak valediction if configured
         if self._config.valediction:
             self._speak_valediction()
+
+        logger.info("Cleanup completed")
+
+    async def _cleanup_async(self) -> None:
+        """Clean up resources (async version for headless mode)."""
+        logger.info("Cleaning up GLaDOS 2.0...")
+
+        # Cancel any ongoing operations
+        if hasattr(self._audio_manager, 'interrupt_playback'):
+            self._audio_manager.interrupt_playback()
+
+        if hasattr(self._llm_manager, 'cancel_current_request'):
+            self._llm_manager.cancel_current_request()
+
+        # Clean up tool manager
+        if self._tool_manager:
+            await self._tool_manager.cleanup()
 
         logger.info("Cleanup completed")
 

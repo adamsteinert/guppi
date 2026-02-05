@@ -23,6 +23,14 @@ class EventType(Enum):
     LISTENING_STOPPED = "listening_stopped"  # User stopped listening, process collected audio
     ERROR_OCCURRED = "error_occurred"
     SHUTDOWN_REQUESTED = "shutdown_requested"
+    # Tool execution events
+    TOOL_EXECUTION_STARTED = "tool_execution_started"
+    TOOL_EXECUTION_COMPLETED = "tool_execution_completed"
+    TOOL_EXECUTION_ERROR = "tool_execution_error"
+    # MCP server events
+    MCP_SERVER_CONNECTED = "mcp_server_connected"
+    MCP_SERVER_DISCONNECTED = "mcp_server_disconnected"
+    MCP_TOOLS_DISCOVERED = "mcp_tools_discovered"
 
 
 class EventBus:

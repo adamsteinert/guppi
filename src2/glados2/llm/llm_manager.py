@@ -1,7 +1,7 @@
 """LLM management system for GLaDOS 2.0."""
 
 import asyncio
-from typing import Optional, AsyncGenerator, Dict, Any, List
+from typing import Optional, AsyncGenerator, Dict, Any, List, TYPE_CHECKING
 from enum import Enum
 import json
 
@@ -10,6 +10,9 @@ from openai import OpenAI, AsyncOpenAI
 
 from ..core.event_bus import EventBus, EventType
 from ..core.state_manager import StateManager, AppState
+
+if TYPE_CHECKING:
+    from ..tools.tool_manager import ToolManager
 
 
 class LLMProvider(Enum):
@@ -27,9 +30,11 @@ class LLMManager:
     with proper error handling and streaming support.
     """
     
-    def __init__(self, event_bus: EventBus, state_manager: StateManager):
+    def __init__(self, event_bus: EventBus, state_manager: StateManager,
+                 tool_manager: Optional["ToolManager"] = None):
         self._event_bus = event_bus
         self._state_manager = state_manager
+        self._tool_manager = tool_manager
 
         # Configuration
         self._provider = LLMProvider.OLLAMA
@@ -40,12 +45,16 @@ class LLMManager:
         self._max_tokens = 2048
 
         # Conversation history
-        self._conversation_history: List[Dict[str, str]] = []
+        self._conversation_history: List[Dict[str, Any]] = []
         self._system_prompt = "You are GLaDOS, the sarcastic AI from Portal."
 
         # Current request tracking
         self._current_request: Optional[asyncio.Task] = None
         self._request_cancelled = asyncio.Event()
+
+        # Tool iteration tracking (reset per request)
+        self._tool_iterations = 0
+        self._max_tool_iterations = 5
 
         # OpenAI clients (for Gemini and OpenAI providers)
         self._openai_client: Optional[OpenAI] = None
@@ -169,10 +178,14 @@ class LLMManager:
                 self._state_manager.set_state(AppState.IDLE)
                 
     async def _send_streaming_request(self, message: str) -> Optional[str]:
-        """Send a streaming LLM request."""
+        """Send a streaming LLM request with tool support."""
         logger.info(f"Sending streaming LLM request: {message[:50]}...")
 
+        # Reset tool iteration counter for new request
+        self._tool_iterations = 0
+
         full_response = ""
+        accumulated_tool_calls: List[Dict[str, Any]] = []
 
         try:
             client = self._get_async_openai_client()
@@ -182,33 +195,69 @@ class LLMManager:
                 return await self._send_mock_streaming_request(message)
 
             # Build messages list with system prompt
-            messages = [{"role": "system", "content": self._system_prompt}]
+            messages: List[Dict[str, Any]] = [{"role": "system", "content": self._system_prompt}]
             messages.extend(self._conversation_history)
 
+            # Build request parameters
+            request_params: Dict[str, Any] = {
+                "model": self._model,
+                "messages": messages,
+                "temperature": self._temperature,
+                "max_tokens": self._max_tokens,
+                "stream": True
+            }
+
+            # Add tools if available
+            if self._tool_manager and self._tool_manager.has_tools():
+                request_params["tools"] = self._tool_manager.get_tools_openai_format()
+                request_params["tool_choice"] = "auto"
+
             # Stream completion
-            stream = await client.chat.completions.create(
-                model=self._model,
-                messages=messages,
-                temperature=self._temperature,
-                max_tokens=self._max_tokens,
-                stream=True
-            )
+            stream = await client.chat.completions.create(**request_params)
 
             async for chunk in stream:
                 if self._request_cancelled.is_set():
                     logger.info("Streaming request cancelled")
                     return None
 
-                delta = chunk.choices[0].delta
+                choice = chunk.choices[0] if chunk.choices else None
+                if not choice:
+                    continue
+
+                delta = choice.delta
+
+                # Handle content
                 if delta.content:
                     full_response += delta.content
-
                     self._event_bus.publish(EventType.LLM_RESPONSE_CHUNK, {
                         "chunk": delta.content,
                         "full_response_so_far": full_response
                     })
 
-            # Add response to conversation history
+                # Handle tool calls in streaming (accumulate fragments)
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        if tc.index is not None:
+                            # Extend list if needed
+                            while len(accumulated_tool_calls) <= tc.index:
+                                accumulated_tool_calls.append({
+                                    "id": "",
+                                    "function": {"name": "", "arguments": ""}
+                                })
+                            # Accumulate fragments
+                            if tc.id:
+                                accumulated_tool_calls[tc.index]["id"] = tc.id
+                            if tc.function:
+                                if tc.function.name:
+                                    accumulated_tool_calls[tc.index]["function"]["name"] = tc.function.name
+                                if tc.function.arguments:
+                                    accumulated_tool_calls[tc.index]["function"]["arguments"] += tc.function.arguments
+
+            # Check for tool calls to execute
+            if accumulated_tool_calls and self._tool_manager:
+                return await self._handle_tool_calls(messages, accumulated_tool_calls)
+
+            # No tool calls - normal response flow
             self._conversation_history.append({"role": "assistant", "content": full_response})
 
             self._event_bus.publish(EventType.LLM_RESPONSE_COMPLETED, {
@@ -283,7 +332,173 @@ class LLMManager:
                 "error": str(e)
             })
             raise
-            
+
+    async def _handle_tool_calls(self,
+                                 messages: List[Dict[str, Any]],
+                                 tool_calls: List[Dict[str, Any]]) -> Optional[str]:
+        """
+        Execute tool calls and continue the conversation.
+
+        Supports multi-turn tool usage where the LLM may call
+        multiple tools or chain tool calls.
+        """
+        from ..tools.tool_types import ToolCall
+
+        self._tool_iterations += 1
+
+        if self._tool_iterations > self._max_tool_iterations:
+            logger.warning(f"Max tool iterations ({self._max_tool_iterations}) reached")
+            error_msg = "I've reached the maximum number of tool calls. Please try rephrasing your request."
+            self._conversation_history.append({"role": "assistant", "content": error_msg})
+            self._event_bus.publish(EventType.LLM_RESPONSE_COMPLETED, {
+                "full_response": error_msg,
+                "success": True
+            })
+            self._event_bus.publish(EventType.MESSAGE_RECEIVED, {
+                "role": "assistant",
+                "content": error_msg
+            })
+            return error_msg
+
+        # Build assistant message with tool calls
+        assistant_message: Dict[str, Any] = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {
+                        "name": tc["function"]["name"],
+                        "arguments": tc["function"]["arguments"]
+                    }
+                }
+                for tc in tool_calls
+            ]
+        }
+        messages.append(assistant_message)
+
+        # Also add to conversation history
+        self._conversation_history.append(assistant_message)
+
+        # Execute each tool call
+        tool_results: List[Dict[str, Any]] = []
+        for tc in tool_calls:
+            try:
+                arguments = json.loads(tc["function"]["arguments"])
+            except json.JSONDecodeError:
+                arguments = {}
+
+            tool_call = ToolCall(
+                id=tc["id"],
+                name=tc["function"]["name"],
+                arguments=arguments
+            )
+
+            logger.info(f"Executing tool: {tool_call.name}")
+            result = await self._tool_manager.execute_tool(tool_call)
+
+            # Format result for API
+            result_content = "\n".join(
+                item.get("text", str(item))
+                for item in result.content
+            )
+
+            tool_result_msg = {
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": result_content
+            }
+            tool_results.append(tool_result_msg)
+
+        # Add tool results to messages
+        messages.extend(tool_results)
+
+        # Also add to conversation history
+        self._conversation_history.extend(tool_results)
+
+        # Continue the conversation with tool results
+        return await self._continue_after_tools(messages)
+
+    async def _continue_after_tools(self, messages: List[Dict[str, Any]]) -> Optional[str]:
+        """Continue the conversation after tool execution."""
+        client = self._get_async_openai_client()
+        if not client:
+            return None
+
+        full_response = ""
+        accumulated_tool_calls: List[Dict[str, Any]] = []
+
+        request_params: Dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "temperature": self._temperature,
+            "max_tokens": self._max_tokens,
+            "stream": True
+        }
+
+        # Include tools for potential chained calls
+        if self._tool_manager and self._tool_manager.has_tools():
+            request_params["tools"] = self._tool_manager.get_tools_openai_format()
+            request_params["tool_choice"] = "auto"
+
+        stream = await client.chat.completions.create(**request_params)
+
+        async for chunk in stream:
+            if self._request_cancelled.is_set():
+                return None
+
+            choice = chunk.choices[0] if chunk.choices else None
+            if not choice:
+                continue
+
+            delta = choice.delta
+
+            if delta.content:
+                full_response += delta.content
+                self._event_bus.publish(EventType.LLM_RESPONSE_CHUNK, {
+                    "chunk": delta.content,
+                    "full_response_so_far": full_response
+                })
+
+            # Handle additional tool calls
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    if tc.index is not None:
+                        while len(accumulated_tool_calls) <= tc.index:
+                            accumulated_tool_calls.append({
+                                "id": "",
+                                "function": {"name": "", "arguments": ""}
+                            })
+                        if tc.id:
+                            accumulated_tool_calls[tc.index]["id"] = tc.id
+                        if tc.function:
+                            if tc.function.name:
+                                accumulated_tool_calls[tc.index]["function"]["name"] = tc.function.name
+                            if tc.function.arguments:
+                                accumulated_tool_calls[tc.index]["function"]["arguments"] += tc.function.arguments
+
+        # Check for chained tool calls
+        if accumulated_tool_calls:
+            return await self._handle_tool_calls(messages, accumulated_tool_calls)
+
+        # Final response - reset tool iteration counter
+        self._tool_iterations = 0
+
+        self._conversation_history.append({"role": "assistant", "content": full_response})
+
+        self._event_bus.publish(EventType.LLM_RESPONSE_COMPLETED, {
+            "full_response": full_response,
+            "success": True
+        })
+
+        self._event_bus.publish(EventType.MESSAGE_RECEIVED, {
+            "role": "assistant",
+            "content": full_response
+        })
+
+        return full_response
+
     async def _send_single_request(self, message: str) -> Optional[str]:
         """Send a non-streaming LLM request."""
         logger.info(f"Sending single LLM request: {message[:50]}...")
@@ -349,6 +564,8 @@ class LLMManager:
             self._temperature = kwargs["temperature"]
         if "max_tokens" in kwargs:
             self._max_tokens = kwargs["max_tokens"]
+        if "max_tool_iterations" in kwargs:
+            self._max_tool_iterations = kwargs["max_tool_iterations"]
 
         # Reset clients to force recreation with new config
         self._openai_client = None

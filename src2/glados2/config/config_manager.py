@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import os
 import re
 import yaml
@@ -76,12 +76,32 @@ class UIConfig:
 
 
 @dataclass
+class MCPServerConfig:
+    """Configuration for a single MCP server."""
+    name: str = ""
+    command: str = ""
+    args: List[str] = field(default_factory=list)
+    env: Dict[str, str] = field(default_factory=dict)
+    enabled: bool = True
+
+
+@dataclass
+class ToolsConfig:
+    """Tools configuration settings."""
+    enabled: bool = True
+    mcp_servers: List[MCPServerConfig] = field(default_factory=list)
+    tool_timeout_seconds: float = 30.0
+    max_tool_iterations: int = 5
+
+
+@dataclass
 class GladosConfig:
     """Main configuration for GLaDOS 2.0."""
     audio: AudioConfig = field(default_factory=AudioConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
     ui: UIConfig = field(default_factory=UIConfig)
+    tools: ToolsConfig = field(default_factory=ToolsConfig)
 
     # Global settings
     wake_word: Optional[str] = None
@@ -174,7 +194,26 @@ class GladosConfig:
                 auto_scroll=ui_data.get("auto_scroll", config.ui.auto_scroll),
                 font_size=ui_data.get("font_size", config.ui.font_size),
             )
-            
+
+        # Load tools settings
+        if "tools" in data:
+            tools_data = data["tools"]
+            mcp_servers = []
+            for server_data in tools_data.get("mcp_servers", []):
+                mcp_servers.append(MCPServerConfig(
+                    name=server_data.get("name", ""),
+                    command=server_data.get("command", ""),
+                    args=server_data.get("args", []),
+                    env=server_data.get("env", {}),
+                    enabled=server_data.get("enabled", True),
+                ))
+            config.tools = ToolsConfig(
+                enabled=tools_data.get("enabled", config.tools.enabled),
+                mcp_servers=mcp_servers,
+                tool_timeout_seconds=tools_data.get("tool_timeout_seconds", config.tools.tool_timeout_seconds),
+                max_tool_iterations=tools_data.get("max_tool_iterations", config.tools.max_tool_iterations),
+            )
+
         # Load global settings
         config.wake_word = data.get("wake_word", config.wake_word)
         config.wake_word_variants = data.get("wake_word_variants", config.wake_word_variants)
@@ -218,6 +257,21 @@ class GladosConfig:
                 "show_debug": self.ui.show_debug,
                 "auto_scroll": self.ui.auto_scroll,
                 "font_size": self.ui.font_size,
+            },
+            "tools": {
+                "enabled": self.tools.enabled,
+                "tool_timeout_seconds": self.tools.tool_timeout_seconds,
+                "max_tool_iterations": self.tools.max_tool_iterations,
+                "mcp_servers": [
+                    {
+                        "name": s.name,
+                        "command": s.command,
+                        "args": s.args,
+                        "env": s.env,
+                        "enabled": s.enabled,
+                    }
+                    for s in self.tools.mcp_servers
+                ],
             },
             "wake_word": self.wake_word,
             "wake_word_variants": self.wake_word_variants,
