@@ -133,6 +133,134 @@ class GladosApp:
             logger.info("Application interrupted by user")
         finally:
             await self._cleanup_async()
+
+    async def run_debug(self) -> None:
+        """
+        Run in debug mode with terminal input loop.
+
+        This mode:
+        - Uses simple terminal input (no TUI)
+        - Does not listen for voice input
+        - Outputs debug info to stdout/stderr
+        - Still plays audio responses via TTS
+        """
+        print("\n" + "=" * 60)
+        print("GLaDOS 2.0 - Debug Mode")
+        print("=" * 60)
+        print("Type your messages and press Enter to send.")
+        print("Type 'quit' or 'exit' to stop.")
+        print("Type 'clear' to clear conversation history.")
+        print("Type 'tools' to list available tools.")
+        print("=" * 60 + "\n")
+
+        try:
+            # Initialize tool manager (connect to MCP servers)
+            if self._tool_manager:
+                print("Initializing tools...")
+                await self._tool_manager.initialize()
+                tool_names = self._tool_manager.get_tool_names()
+                if tool_names:
+                    print(f"Tools available: {', '.join(tool_names)}")
+                else:
+                    print("No tools configured.")
+                print()
+
+            # Set state to idle
+            self._state_manager.set_state(AppState.IDLE)
+
+            # Subscribe to events for debug output
+            self._event_bus.subscribe(
+                EventType.LLM_RESPONSE_CHUNK,
+                lambda d: print(d.get("chunk", ""), end="", flush=True)
+            )
+            self._event_bus.subscribe(
+                EventType.LLM_RESPONSE_COMPLETED,
+                lambda d: print("\n")  # Newline after response
+            )
+            self._event_bus.subscribe(
+                EventType.TOOL_EXECUTION_STARTED,
+                lambda d: print(f"\n[Tool: {d.get('tool_name')}] Executing...")
+            )
+            self._event_bus.subscribe(
+                EventType.TOOL_EXECUTION_COMPLETED,
+                lambda d: print(f"[Tool: {d.get('tool_name')}] Completed in {d.get('duration_ms', 0):.0f}ms")
+            )
+            self._event_bus.subscribe(
+                EventType.TOOL_EXECUTION_ERROR,
+                lambda d: print(f"[Tool: {d.get('tool_name')}] Error: {d.get('error')}")
+            )
+
+            # Speak salutation if configured
+            if self._config.salutation:
+                print(f"GLaDOS: {self._config.salutation}")
+                await self._audio_manager.synthesize_and_play(self._config.salutation)
+
+            # Main input loop
+            while True:
+                try:
+                    # Get user input
+                    user_input = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: input("You: ")
+                    )
+                    user_input = user_input.strip()
+
+                    if not user_input:
+                        continue
+
+                    # Handle special commands
+                    if user_input.lower() in ("quit", "exit"):
+                        print("\nShutting down...")
+                        break
+
+                    if user_input.lower() == "clear":
+                        self._llm_manager.clear_conversation_history()
+                        print("Conversation history cleared.\n")
+                        continue
+
+                    if user_input.lower() == "tools":
+                        if self._tool_manager and self._tool_manager.has_tools():
+                            print("\nAvailable tools:")
+                            for name in self._tool_manager.get_tool_names():
+                                print(f"  - {name}")
+                            print()
+                        else:
+                            print("No tools available.\n")
+                        continue
+
+                    # Send message to LLM
+                    print("\nGLaDOS: ", end="", flush=True)
+
+                    # Publish user message to trigger LLM response
+                    # The LLM manager will handle the response and publish MESSAGE_RECEIVED
+                    # which triggers TTS playback via audio manager
+                    self._event_bus.publish(EventType.MESSAGE_RECEIVED, {
+                        "role": "user",
+                        "content": user_input
+                    })
+
+                    # Wait for response to complete
+                    while self._state_manager.get_state() == AppState.CALLING_LLM:
+                        await asyncio.sleep(0.05)
+
+                    # Wait a bit more for TTS to start if needed
+                    await asyncio.sleep(0.1)
+
+                    # Wait for any audio playback to complete
+                    while self._state_manager.get_state() in (
+                        AppState.GENERATING_TTS,
+                        AppState.PLAYING_AUDIO
+                    ):
+                        await asyncio.sleep(0.1)
+
+                except EOFError:
+                    # Handle Ctrl+D
+                    print("\nShutting down...")
+                    break
+
+        except KeyboardInterrupt:
+            print("\n\nInterrupted by user")
+        finally:
+            await self._cleanup_async()
             
     def _handle_shutdown(self, event_data: dict) -> None:
         """Handle shutdown request."""
@@ -228,7 +356,7 @@ class GladosApp:
 def main():
     """CLI entry point."""
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="GLaDOS 2.0 Voice Assistant")
     parser.add_argument(
         "--config",
@@ -236,18 +364,28 @@ def main():
         default="configs/glados2_config.yaml",
         help="Path to configuration file"
     )
-    parser.add_argument(
+
+    # Mutually exclusive run modes
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
         "--headless",
         action="store_true",
-        help="Run without UI"
+        help="Run without UI (server/embedded mode)"
     )
-    
+    mode_group.add_argument(
+        "--debug",
+        action="store_true",
+        help="Run in debug mode with terminal input (no TUI, no voice input, but with audio output)"
+    )
+
     args = parser.parse_args()
-    
+
     app = GladosApp(config_path=args.config)
-    
+
     if args.headless:
         asyncio.run(app.run_headless())
+    elif args.debug:
+        asyncio.run(app.run_debug())
     else:
         app.run_ui()
 
