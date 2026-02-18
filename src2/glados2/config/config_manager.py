@@ -63,7 +63,9 @@ class TTSConfig:
     voice: str = "glados"
     speed: float = 1.0
     quality: str = "high"
-    # TODO: Add more TTS-specific settings
+    # Long response summarization
+    summarize_long_responses: bool = True
+    max_speech_words: int = 150  # ~30 seconds at typical speech rate
 
 
 @dataclass
@@ -183,6 +185,8 @@ class GladosConfig:
                 voice=tts_data.get("voice", config.tts.voice),
                 speed=tts_data.get("speed", config.tts.speed),
                 quality=tts_data.get("quality", config.tts.quality),
+                summarize_long_responses=tts_data.get("summarize_long_responses", config.tts.summarize_long_responses),
+                max_speech_words=tts_data.get("max_speech_words", config.tts.max_speech_words),
             )
             
         # Load UI settings
@@ -251,6 +255,8 @@ class GladosConfig:
                 "voice": self.tts.voice,
                 "speed": self.tts.speed,
                 "quality": self.tts.quality,
+                "summarize_long_responses": self.tts.summarize_long_responses,
+                "max_speech_words": self.tts.max_speech_words,
             },
             "ui": {
                 "theme": self.ui.theme,

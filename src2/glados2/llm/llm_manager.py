@@ -56,6 +56,10 @@ class LLMManager:
         self._tool_iterations = 0
         self._max_tool_iterations = 5
 
+        # TTS summarization settings
+        self._summarize_long_responses = True
+        self._max_speech_words = 150  # ~30 seconds at typical speech rate
+
         # OpenAI clients (for Gemini and OpenAI providers)
         self._openai_client: Optional[OpenAI] = None
         self._async_openai_client: Optional[AsyncOpenAI] = None
@@ -265,11 +269,8 @@ class LLMManager:
                 "success": True
             })
 
-            # Publish assistant response for TTS processing
-            self._event_bus.publish(EventType.MESSAGE_RECEIVED, {
-                "role": "assistant",
-                "content": full_response
-            })
+            # Publish assistant response for TTS processing (with summarization if needed)
+            await self._publish_assistant_response_for_tts(full_response)
 
             return full_response
 
@@ -316,11 +317,8 @@ class LLMManager:
                 "success": True
             })
 
-            # Publish assistant response for TTS processing
-            self._event_bus.publish(EventType.MESSAGE_RECEIVED, {
-                "role": "assistant",
-                "content": full_response
-            })
+            # Publish assistant response for TTS processing (with summarization if needed)
+            await self._publish_assistant_response_for_tts(full_response)
 
             return full_response
 
@@ -354,6 +352,7 @@ class LLMManager:
                 "full_response": error_msg,
                 "success": True
             })
+            # Error messages are short, no need to summarize
             self._event_bus.publish(EventType.MESSAGE_RECEIVED, {
                 "role": "assistant",
                 "content": error_msg
@@ -492,10 +491,8 @@ class LLMManager:
             "success": True
         })
 
-        self._event_bus.publish(EventType.MESSAGE_RECEIVED, {
-            "role": "assistant",
-            "content": full_response
-        })
+        # Publish assistant response for TTS processing (with summarization if needed)
+        await self._publish_assistant_response_for_tts(full_response)
 
         return full_response
 
@@ -566,13 +563,90 @@ class LLMManager:
             self._max_tokens = kwargs["max_tokens"]
         if "max_tool_iterations" in kwargs:
             self._max_tool_iterations = kwargs["max_tool_iterations"]
+        if "summarize_long_responses" in kwargs:
+            self._summarize_long_responses = kwargs["summarize_long_responses"]
+        if "max_speech_words" in kwargs:
+            self._max_speech_words = kwargs["max_speech_words"]
 
         # Reset clients to force recreation with new config
         self._openai_client = None
         self._async_openai_client = None
 
         logger.info(f"LLM provider configured: {provider.value} with model {self._model}")
-        
+
+    async def _publish_assistant_response_for_tts(self, full_response: str) -> None:
+        """
+        Publish assistant response for TTS, summarizing if too long.
+
+        If the response exceeds max_speech_words and summarization is enabled,
+        requests a summary from the LLM and publishes that for TTS instead.
+        The full response is still shown in the UI/console.
+        """
+        word_count = len(full_response.split())
+
+        if self._summarize_long_responses and word_count > self._max_speech_words:
+            logger.info(f"Response too long for TTS ({word_count} words > {self._max_speech_words}), summarizing...")
+
+            # Get a summary for TTS
+            summary = await self._get_tts_summary(full_response)
+
+            if summary:
+                logger.info(f"Using summary for TTS ({len(summary.split())} words)")
+                self._event_bus.publish(EventType.MESSAGE_RECEIVED, {
+                    "role": "assistant",
+                    "content": summary,
+                    "is_summary": True,
+                    "original_word_count": word_count
+                })
+            else:
+                # Summarization failed, use original
+                logger.warning("Summarization failed, using original response for TTS")
+                self._event_bus.publish(EventType.MESSAGE_RECEIVED, {
+                    "role": "assistant",
+                    "content": full_response
+                })
+        else:
+            # Response is short enough, use as-is
+            self._event_bus.publish(EventType.MESSAGE_RECEIVED, {
+                "role": "assistant",
+                "content": full_response
+            })
+
+    async def _get_tts_summary(self, text: str) -> Optional[str]:
+        """
+        Get a brief summary of the text suitable for TTS.
+
+        Returns a condensed version that captures the key points
+        in under max_speech_words.
+        """
+        try:
+            client = self._get_async_openai_client()
+            if not client:
+                return None
+
+            summary_prompt = f"""Summarize the following response in 2-3 sentences (under {self._max_speech_words} words) for text-to-speech.
+Keep the same tone and personality. Focus on the key points.
+
+Response to summarize:
+{text}
+
+Brief summary:"""
+
+            response = await client.chat.completions.create(
+                model=self._model,
+                messages=[{"role": "user", "content": summary_prompt}],
+                temperature=0.3,
+                max_tokens=200,
+                stream=False
+            )
+
+            summary = response.choices[0].message.content.strip()
+            return summary if summary else None
+
+        except Exception as e:
+            logger.error(f"Error getting TTS summary: {e}")
+            return None
+
     def _generate_mock_response(self, message: str) -> str:
         """
         Generate a mock GLaDOS-style response for testing.

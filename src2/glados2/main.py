@@ -76,7 +76,10 @@ class GladosApp:
             api_key=self._config.llm.api_key,
             temperature=self._config.llm.temperature,
             max_tokens=self._config.llm.max_tokens,
-            max_tool_iterations=self._config.tools.max_tool_iterations
+            max_tool_iterations=self._config.tools.max_tool_iterations,
+            # TTS summarization settings
+            summarize_long_responses=self._config.tts.summarize_long_responses,
+            max_speech_words=self._config.tts.max_speech_words
         )
         self._llm_manager.set_system_prompt(self._config.llm.system_prompt)
 
