@@ -75,6 +75,7 @@ class UIConfig:
     show_debug: bool = False
     auto_scroll: bool = True
     font_size: str = "medium"
+    compact_mode: bool = False
 
 
 @dataclass
@@ -197,6 +198,7 @@ class GladosConfig:
                 show_debug=ui_data.get("show_debug", config.ui.show_debug),
                 auto_scroll=ui_data.get("auto_scroll", config.ui.auto_scroll),
                 font_size=ui_data.get("font_size", config.ui.font_size),
+                compact_mode=ui_data.get("compact_mode", config.ui.compact_mode),
             )
 
         # Load tools settings

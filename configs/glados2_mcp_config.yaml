@@ -59,6 +59,7 @@ tts:
   max_speech_words: 100
 ui:
   auto_scroll: true
+  compact_mode: false
   font_size: medium
   show_debug: false
   theme: dark

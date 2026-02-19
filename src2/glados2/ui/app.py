@@ -72,6 +72,7 @@ Use single keys to control GLaDOS:
 • [bold]T[/bold] - Toggle debug view
 • [bold]M[/bold] - Toggle microphone mute
 • [bold]S[/bold] - Toggle speaker mute
+• [bold]C[/bold] - Toggle compact mode
 • [bold]H[/bold] - Show this help
 • [bold]Q[/bold] - Quit application
 
@@ -121,6 +122,7 @@ class GladosUI(App[None]):
         Binding("s", "toggle_speaker", "Speaker", show=True),
         Binding("t", "toggle_debug", "Debug", show=True),
         Binding("p", "enter_text_mode", "Type", show=True),
+        Binding("c", "toggle_compact", "Compact", show=True),
     ]
     
     CSS = """
@@ -179,6 +181,23 @@ class GladosUI(App[None]):
         height: 80%;
         border: solid $primary;
     }
+
+    #compact_container {
+        display: none;
+        height: auto;
+        margin: 0 1;
+        border: solid $secondary;
+    }
+
+    #compact_status_line {
+        height: 1;
+        padding: 0 1;
+    }
+
+    #compact_device_line {
+        height: 1;
+        padding: 0 1;
+    }
     """
     
     def __init__(self, event_bus: Optional[EventBus] = None):
@@ -194,6 +213,11 @@ class GladosUI(App[None]):
         self._show_debug = False
         self._logger_sink_id = None
         self._text_input_mode = False  # Track if we're in text input mode
+        self._compact_mode = False  # Compact mode (may be overridden by config injection)
+
+        # Tracked state for compact display updates
+        self._current_state_text = "Idle"
+        self._current_audio_text = "[green]Ready[/]"
 
         # Managers will be injected by main app
         self._audio_manager = None
@@ -236,6 +260,17 @@ class GladosUI(App[None]):
     def compose(self) -> ComposeResult:
         """Compose the main UI layout."""
         yield Header(show_clock=True)
+
+        # Compact mode container (hidden by default, toggled with C key)
+        with Container(id="compact_container"):
+            yield Static(
+                "[bold]●[/] Idle     Audio: [green]Ready[/]     LLM: [green]Connected[/]",
+                id="compact_status_line",
+            )
+            yield Static(
+                "Mic: [dim]Loading...[/]     Speaker: [dim]Loading...[/]",
+                id="compact_device_line",
+            )
 
         with Container(id="main_container"):
             # Main conversation area
@@ -312,6 +347,10 @@ class GladosUI(App[None]):
         if self._message_input:
             self._message_input.disabled = True
 
+        # Apply compact mode if set by config injection
+        if self._compact_mode:
+            self._apply_compact_mode()
+
         # Start background services (stubbed for now)
         self.call_later(self._initialize_services)
         
@@ -363,6 +402,10 @@ class GladosUI(App[None]):
             mic_widget.update(f"Mic: [cyan]{mic_name}[/]")
             speaker_widget.update(f"Speaker: [cyan]{speaker_name}[/]")
 
+            # Update compact device line
+            if self._compact_mode:
+                self._update_compact_devices()
+
             logger.debug(f"Audio devices - Input: {mic_name}, Output: {speaker_name}")
 
         except Exception as e:
@@ -381,6 +424,12 @@ class GladosUI(App[None]):
         old_state = event_data.get("old_state")
         if self._status_display and new_state:
             self._status_display.update_status(new_state.value)
+
+        # Track state for compact display
+        if new_state:
+            self._current_state_text = new_state.value.replace("_", " ").title()
+            if self._compact_mode:
+                self._update_compact_status()
 
         # Log state transition
         if old_state:
@@ -418,12 +467,20 @@ class GladosUI(App[None]):
         audio_widget = self.query_one("#audio_status", Static)
         if status == "listening":
             audio_widget.update("Audio: [blue]Listening[/]")
+            self._current_audio_text = "[blue]Listening[/]"
         elif status == "processing":
             audio_widget.update("Audio: [yellow]Processing[/]")
+            self._current_audio_text = "[yellow]Processing[/]"
         elif status == "speaking":
             audio_widget.update("Audio: [red]Speaking[/]")
+            self._current_audio_text = "[red]Speaking[/]"
         else:
             audio_widget.update("Audio: [green]Ready[/]")
+            self._current_audio_text = "[green]Ready[/]"
+
+        # Update compact view if active
+        if self._compact_mode:
+            self._update_compact_status()
 
         # Log audio status change
         logger.debug(f"Audio status changed to: {status}")
@@ -624,6 +681,47 @@ class GladosUI(App[None]):
             if self._debug_log:
                 self._debug_log.styles.display = "none"
             logger.info("Switched to conversation view")
+
+    def action_toggle_compact(self) -> None:
+        """Toggle between compact and full UI mode."""
+        self._compact_mode = not self._compact_mode
+        self._apply_compact_mode()
+        logger.info(f"Switched to {'compact' if self._compact_mode else 'full'} mode")
+
+    def _apply_compact_mode(self) -> None:
+        """Apply the current compact mode state to the UI."""
+        main = self.query_one("#main_container")
+        compact = self.query_one("#compact_container")
+        if self._compact_mode:
+            main.styles.display = "none"
+            compact.styles.display = "block"
+            self._update_compact_status()
+            self._update_compact_devices()
+        else:
+            main.styles.display = "block"
+            compact.styles.display = "none"
+
+    def _update_compact_status(self) -> None:
+        """Rebuild the compact status line from current state."""
+        try:
+            widget = self.query_one("#compact_status_line", Static)
+            widget.update(
+                f"[bold]●[/] {self._current_state_text}     "
+                f"Audio: {self._current_audio_text}     "
+                f"LLM: [green]Connected[/]"
+            )
+        except Exception:
+            pass
+
+    def _update_compact_devices(self) -> None:
+        """Rebuild the compact device line from current device info."""
+        try:
+            mic_text = self.query_one("#mic_device", Static).renderable
+            speaker_text = self.query_one("#speaker_device", Static).renderable
+            compact_device = self.query_one("#compact_device_line", Static)
+            compact_device.update(f"{mic_text}     {speaker_text}")
+        except Exception:
+            pass
 
     def action_quit(self) -> None:
         """Quit the application cleanly."""

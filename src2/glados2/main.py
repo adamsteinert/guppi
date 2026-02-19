@@ -107,6 +107,8 @@ class GladosApp:
             self._ui._llm_manager = self._llm_manager
             # Pass salutation config so UI can speak it on startup
             self._ui._salutation = self._config.salutation
+            # Apply compact mode from config
+            self._ui._compact_mode = self._config.ui.compact_mode
 
             # Run the UI
             self._ui.run()
