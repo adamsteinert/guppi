@@ -565,43 +565,33 @@ class AudioManager:
             if audio_data.ndim > 1:
                 audio_data = audio_data.flatten()
 
-            # Use sounddevice for playback
-            playback_finished = asyncio.Event()
-            playback_success = [True]  # Use list to modify from callback
+            # Use an OutputStream with a finished_callback so we know
+            # exactly when playback completes — no sleep-based guessing.
+            playback_done = threading.Event()
 
-            def playback_finished_callback():
-                playback_finished.set()
-
-            def playback_error_callback(error):
-                logger.error(f"Audio playback error: {error}")
-                playback_success[0] = False
-                playback_finished.set()
-
-            # Start playback (mono audio - channels inferred from shape)
-            sd.play(
-                audio_data,
+            stream = sd.OutputStream(
                 samplerate=self._tts.sample_rate,
-                blocking=False
+                channels=1,
+                dtype='float32',
+                finished_callback=playback_done.set,
             )
-            
-            # Simulate finished callback since sd.play doesn't have one
-            def check_playback():
-                import time
-                time.sleep(len(audio_data) / self._tts.sample_rate)
-                playback_finished_callback()
-                
-            import threading
-            threading.Thread(target=check_playback, daemon=True).start()
-            
-            # Wait for playback to finish or cancellation
-            while not playback_finished.is_set():
+
+            stream.start()
+            stream.write(audio_data.reshape(-1, 1))
+            # Signal that all data has been written; playback will
+            # continue until the buffer drains, then finished_callback fires.
+            stream.stop()
+
+            # Poll until playback finishes or cancellation is requested
+            while not playback_done.is_set():
                 if self._playback_cancelled.is_set():
-                    sd.stop()  # Stop playback
+                    stream.abort()
+                    stream.close()
                     return False
-                    
-                await asyncio.sleep(0.01)  # Check every 10ms
-                
-            return playback_success[0]
+                await asyncio.sleep(0.01)
+
+            stream.close()
+            return True
             
         except Exception as e:
             logger.error(f"Error in async audio playback: {e}")
