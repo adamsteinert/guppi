@@ -1,6 +1,7 @@
 """LLM management system for GLaDOS 2.0."""
 
 import asyncio
+import threading
 from typing import Optional, AsyncGenerator, Dict, Any, List, TYPE_CHECKING
 from enum import Enum
 import json
@@ -50,7 +51,9 @@ class LLMManager:
 
         # Current request tracking
         self._current_request: Optional[asyncio.Task] = None
-        self._request_cancelled = asyncio.Event()
+        # threading.Event (not asyncio.Event) because cancellation is
+        # signalled across threads — asyncio.Event is not thread-safe.
+        self._request_cancelled = threading.Event()
 
         # Tool iteration tracking (reset per request)
         self._tool_iterations = 0
@@ -90,8 +93,6 @@ class LLMManager:
         This handles the case where we're called from a sync callback
         (like EventBus.publish) and need to run async code.
         """
-        import threading
-
         try:
             # Try to get the running event loop
             loop = asyncio.get_running_loop()
