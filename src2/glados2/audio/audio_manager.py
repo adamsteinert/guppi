@@ -206,6 +206,7 @@ class AudioManager:
         so we need to safely schedule async tasks.
         """
         new_state = event_data.get("new_state")
+        previous_state = event_data.get("previous_state")
 
         if new_state == AppState.LISTENING:
             self._schedule_async_task(self.start_listening())
@@ -213,6 +214,11 @@ class AudioManager:
             # Audio playback will be started via play_audio method
             pass
         elif new_state == AppState.IDLE:
+            # Only stop listening if we were actually listening —
+            # don't tear down everything on every IDLE transition.
+            if previous_state == AppState.LISTENING:
+                self._stop_listening.set()
+        elif new_state == AppState.SHUTTING_DOWN:
             self._schedule_async_task(self.stop_all_audio())
 
     def _schedule_async_task(self, coro) -> None:
@@ -317,12 +323,11 @@ class AudioManager:
         await self._listen_loop()
         
     async def stop_all_audio(self) -> None:
-        """Stop all audio operations."""
+        """Stop all audio operations (used during shutdown)."""
         logger.info("Stopping all audio operations...")
 
-        # Stop device monitor
-        if self._device_monitor:
-            self._device_monitor.stop()
+        # Stop device monitor (only on full shutdown)
+        self._device_monitor.stop()
 
         # Stop listening
         self._stop_listening.set()
