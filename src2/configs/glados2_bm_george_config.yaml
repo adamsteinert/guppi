@@ -52,7 +52,7 @@ log_level: INFO
 tts:
   quality: high
   speed: 1.0
-  voice: bm_george
+  voice: glados
   summarize_long_responses: true  # Enable/disable summarization
   max_speech_words: 100          # Word limit (~30 seconds of speech)  
 ui:

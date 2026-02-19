@@ -19,7 +19,7 @@ except ImportError:
 try:
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
-    from glados.TTS.phonemizer import Phonemizer
+    from glados.TTS.phonemizer import Phonemizer, ModelConfig as PhonemizerConfig
     PHONEMIZER_AVAILABLE = True
 except ImportError:
     logger.warning("GLaDOS phonemizer not available - will use fallback")
@@ -40,7 +40,6 @@ class GladosSynthesizer:
 
     # Constants
     MAX_WAV_VALUE = 32767.0
-    SAMPLE_RATE = 22050
 
     # Phoneme markers
     PAD = "_"  # padding (0)
@@ -60,18 +59,27 @@ class GladosSynthesizer:
             phoneme_to_id_path: Optional path to phoneme_to_id.pkl file
         """
         self.model_path = model_path
-        self.sample_rate = self.SAMPLE_RATE
         self.session: Optional[ort.InferenceSession] = None
         self.phonemizer = None
         self.phoneme_to_id: Optional[dict] = None
 
+        # Load sample rate from model JSON config (like v1 does)
+        self.sample_rate = self._load_sample_rate()
+
         # Load the model
         self._load_model()
 
-        # Load phonemizer
+        # Load phonemizer with absolute paths derived from model_path
         if PHONEMIZER_AVAILABLE and Phonemizer is not None:
             try:
-                self.phonemizer = Phonemizer()
+                model_dir = self.model_path.parent
+                config = PhonemizerConfig(
+                    MODEL_NAME=model_dir / "phomenizer_en.onnx",
+                    PHONEME_DICT_PATH=model_dir / "lang_phoneme_dict.pkl",
+                    TOKEN_TO_IDX_PATH=model_dir / "token_to_idx.pkl",
+                    IDX_TO_TOKEN_PATH=model_dir / "idx_to_token.pkl",
+                )
+                self.phonemizer = Phonemizer(config)
                 logger.info("Loaded GLaDOS phonemizer")
             except Exception as e:
                 logger.warning(f"Failed to load phonemizer: {e}")
@@ -79,6 +87,22 @@ class GladosSynthesizer:
         # Load phoneme-to-ID mapping
         if phoneme_to_id_path and phoneme_to_id_path.exists():
             self._load_phoneme_mapping(phoneme_to_id_path)
+
+    def _load_sample_rate(self) -> int:
+        """Load sample rate from the model's JSON config file."""
+        import json
+
+        config_path = self.model_path.with_suffix(".json")
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                config = json.load(f)
+            sr = config.get("audio", {}).get("sample_rate", 22050)
+            sr = 22050
+            logger.info(f"GLaDOS model sample rate: {sr}")
+            return sr
+        except Exception as e:
+            logger.warning(f"Failed to load model config from {config_path}: {e}, defaulting to 22050")
+            return 22050
 
     def _load_model(self) -> None:
         """Load the GLaDOS ONNX model."""

@@ -94,10 +94,6 @@ class GladosApp:
         logger.info("Starting GLaDOS 2.0 with UI...")
 
         try:
-            # Initialize tool manager (connect to MCP servers)
-            if self._tool_manager:
-                asyncio.run(self._tool_manager.initialize())
-
             # Create UI with shared event bus (MUST be passed to constructor
             # so event subscriptions are registered on the shared bus)
             self._ui = GladosUI(event_bus=self._event_bus)
@@ -105,6 +101,9 @@ class GladosApp:
             self._ui._state_manager = self._state_manager
             self._ui._audio_manager = self._audio_manager
             self._ui._llm_manager = self._llm_manager
+            # Pass tool manager so it initializes inside Textual's event loop
+            # (MCP connections use async streams that must live on the running loop)
+            self._ui._tool_manager = self._tool_manager
             # Pass salutation config so UI can speak it on startup
             self._ui._salutation = self._config.salutation
             # Apply compact mode from config
@@ -273,7 +272,11 @@ class GladosApp:
         self._state_manager.set_state(AppState.SHUTTING_DOWN)
         
     def _cleanup(self) -> None:
-        """Clean up resources (sync version for UI mode)."""
+        """Clean up resources (sync version for UI mode).
+
+        Note: Tool manager cleanup is handled by the UI before it exits,
+        since MCP connections are bound to Textual's event loop.
+        """
         logger.info("Cleaning up GLaDOS 2.0...")
 
         # Cancel any ongoing operations
@@ -282,16 +285,6 @@ class GladosApp:
 
         if hasattr(self._llm_manager, 'cancel_current_request'):
             self._llm_manager.cancel_current_request()
-
-        # Clean up tool manager
-        if self._tool_manager:
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(self._tool_manager.cleanup())
-                loop.close()
-            except Exception as e:
-                logger.error(f"Error cleaning up tool manager: {e}")
 
         # Speak valediction if configured
         if self._config.valediction:
@@ -358,41 +351,126 @@ class GladosApp:
             logger.error(f"Error speaking valediction: {e}")
 
 
+def _say(text: str, config_path: str, outfile: Optional[str] = None) -> None:
+    """Synthesize speech from text, optionally saving to a file.
+
+    Args:
+        text: Text to speak.
+        config_path: Path to configuration YAML.
+        outfile: If provided, save audio to this WAV file instead of playing.
+    """
+    import struct
+    import wave
+
+    import numpy as np
+    import sounddevice as sd
+
+    from .audio.tts_processor import TTSProcessor
+    from .config.config_manager import ConfigManager
+
+    config = ConfigManager(config_path).get_config()
+    # Resolve model dir: walk up from cwd until we find models/TTS
+    search = Path.cwd()
+    model_dir = "models/TTS"
+    for _ in range(5):
+        candidate = search / "models" / "TTS"
+        if candidate.exists():
+            model_dir = str(candidate)
+            break
+        search = search.parent
+    tts = TTSProcessor(voice=config.tts.voice, model_dir=model_dir)
+
+    audio = asyncio.run(tts.synthesize_speech(text))
+    if audio is None or len(audio) == 0:
+        print("Error: TTS synthesis failed.")
+        return
+
+    # Determine sample rate for the active voice
+    info = tts.get_model_info()
+    if tts.voice == "glados":
+        sr = info.get("glados_sample_rate", tts.sample_rate)
+    else:
+        sr = info.get("kokoro_sample_rate", tts.sample_rate)
+
+    if outfile:
+        # Normalize float32 audio to int16 WAV
+        peak = np.max(np.abs(audio))
+        if peak > 0:
+            audio = audio / peak
+        audio_int16 = (audio * 32767).astype(np.int16)
+        with wave.open(outfile, "w") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # 16-bit
+            wf.setframerate(sr)
+            wf.writeframes(struct.pack(f"<{len(audio_int16)}h", *audio_int16))
+        print(f"Saved to {outfile}")
+    else:
+        sd.play(audio, samplerate=sr)
+        sd.wait()
+
+
 def main():
     """CLI entry point."""
     import argparse
 
     parser = argparse.ArgumentParser(description="GLaDOS 2.0 Voice Assistant")
+    # Top-level args so "python -m glados2.main --config ..." works without subcommand
     parser.add_argument(
-        "--config",
-        type=str,
-        default="configs/glados2_config.yaml",
-        help="Path to configuration file"
+        "--config", type=str, default="configs/glados2_config.yaml",
+        help="Path to configuration file",
+    )
+    top_mode = parser.add_mutually_exclusive_group()
+    top_mode.add_argument("--headless", action="store_true", help="Run without UI")
+    top_mode.add_argument("--debug", action="store_true", help="Debug mode (terminal input, audio output)")
+
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
+
+    # --- run ---
+    run_parser = subparsers.add_parser("run", help="Run the voice assistant")
+    run_parser.add_argument(
+        "--config", type=str, default="configs/glados2_config.yaml",
+        help="Path to configuration file",
+    )
+    run_mode = run_parser.add_mutually_exclusive_group()
+    run_mode.add_argument("--headless", action="store_true", help="Run without UI")
+    run_mode.add_argument("--debug", action="store_true", help="Debug mode (terminal input, audio output)")
+
+    # --- say ---
+    say_parser = subparsers.add_parser("say", help="Speak text through the speaker")
+    say_parser.add_argument("text", type=str, help="Text to speak")
+    say_parser.add_argument(
+        "--config", type=str, default="configs/glados2_config.yaml",
+        help="Path to configuration file",
     )
 
-    # Mutually exclusive run modes
-    mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument(
-        "--headless",
-        action="store_true",
-        help="Run without UI (server/embedded mode)"
+    # --- saytofile ---
+    stf_parser = subparsers.add_parser("saytofile", help="Save speech to a WAV file")
+    stf_parser.add_argument("text", type=str, help="Text to speak")
+    stf_parser.add_argument(
+        "--outfile", type=str, default="output.wav",
+        help="Output WAV file path (default: output.wav)",
     )
-    mode_group.add_argument(
-        "--debug",
-        action="store_true",
-        help="Run in debug mode with terminal input (no TUI, no voice input, but with audio output)"
+    stf_parser.add_argument(
+        "--config", type=str, default="configs/glados2_config.yaml",
+        help="Path to configuration file",
     )
 
     args = parser.parse_args()
 
-    app = GladosApp(config_path=args.config)
-
-    if args.headless:
-        asyncio.run(app.run_headless())
-    elif args.debug:
-        asyncio.run(app.run_debug())
-    else:
-        app.run_ui()
+    # Default to "run" when no subcommand is given (backwards-compatible)
+    if args.command is None or args.command == "run":
+        config = getattr(args, "config", "configs/glados2_config.yaml")
+        app = GladosApp(config_path=config)
+        if getattr(args, "headless", False):
+            asyncio.run(app.run_headless())
+        elif getattr(args, "debug", False):
+            asyncio.run(app.run_debug())
+        else:
+            app.run_ui()
+    elif args.command == "say":
+        _say(args.text, args.config)
+    elif args.command == "saytofile":
+        _say(args.text, args.config, outfile=args.outfile)
 
 
 if __name__ == "__main__":

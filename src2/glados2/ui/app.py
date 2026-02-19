@@ -222,6 +222,7 @@ class GladosUI(App[None]):
         # Managers will be injected by main app
         self._audio_manager = None
         self._llm_manager = None
+        self._tool_manager = None  # Initialized on Textual's event loop
 
         # Salutation to speak on startup (injected by main app)
         self._salutation: Optional[str] = None
@@ -355,11 +356,41 @@ class GladosUI(App[None]):
         self.call_later(self._initialize_services)
         
     def _initialize_services(self) -> None:
-        """Initialize background services."""
+        """Initialize background services.
+
+        Tool manager initialization happens here (on Textual's event loop)
+        so that MCP subprocess connections are bound to the running loop.
+        """
         logger.info("Initializing services...")
 
-        # TODO: Initialize audio, LLM, and other services
-        # For now, just simulate successful initialization
+        # Initialize tool manager on Textual's event loop so MCP
+        # connections (async streams) live on the same loop used later
+        # for tool execution.
+        if self._tool_manager:
+            asyncio.create_task(self._initialize_tools())
+        else:
+            self._finish_initialization()
+
+    async def _initialize_tools(self) -> None:
+        """Initialize tool manager asynchronously on the running event loop."""
+        try:
+            await self._tool_manager.initialize()
+            tool_names = self._tool_manager.get_tool_names()
+            if tool_names:
+                logger.info(f"Tools available: {', '.join(tool_names)}")
+                if self._conversation_log:
+                    self._conversation_log.add_message(
+                        "system", f"Tools loaded: {', '.join(tool_names)}"
+                    )
+            else:
+                logger.info("No tools discovered from MCP servers")
+        except Exception as e:
+            logger.error(f"Failed to initialize tools: {e}")
+
+        self._finish_initialization()
+
+    def _finish_initialization(self) -> None:
+        """Complete initialization after tools are ready."""
         self._state_manager.set_state(AppState.IDLE)
 
         if self._conversation_log:
@@ -727,6 +758,23 @@ class GladosUI(App[None]):
         """Quit the application cleanly."""
         logger.info("Shutting down GLaDOS 2.0...")
 
+        # Clean up tool manager while Textual's event loop is still running,
+        # since MCP connections are bound to this loop.
+        if self._tool_manager:
+            asyncio.create_task(self._cleanup_and_exit())
+        else:
+            self._finalize_quit()
+
+    async def _cleanup_and_exit(self) -> None:
+        """Clean up tool manager then exit."""
+        try:
+            await self._tool_manager.cleanup()
+        except Exception as e:
+            logger.error(f"Error cleaning up tool manager: {e}")
+        self._finalize_quit()
+
+    def _finalize_quit(self) -> None:
+        """Final quit steps after async cleanup."""
         # Remove the custom logger sink
         if self._logger_sink_id is not None:
             logger.remove(self._logger_sink_id)

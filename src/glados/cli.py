@@ -344,7 +344,6 @@ def main() -> None:
 
     # Say command
     say_parser = subparsers.add_parser("say", help="Make GLaDOS speak text")
-    say_parser = subparsers.add_parser("saytofile", help="Save GLaDOS speech to text")
     say_parser.add_argument("text", type=str, help="Text for GLaDOS to speak")
     say_parser.add_argument(
         "--config",
@@ -352,7 +351,17 @@ def main() -> None:
         default=DEFAULT_CONFIG,
         help=f"Path to configuration file (default: {DEFAULT_CONFIG})",
     )
-    say_parser.add_argument(
+
+    # Say to file command
+    saytofile_parser = subparsers.add_parser("saytofile", help="Save GLaDOS speech to file")
+    saytofile_parser.add_argument("text", type=str, help="Text for GLaDOS to speak")
+    saytofile_parser.add_argument(
+        "--config",
+        type=str,
+        default=DEFAULT_CONFIG,
+        help=f"Path to configuration file (default: {DEFAULT_CONFIG})",
+    )
+    saytofile_parser.add_argument(
         "--outfile",
         type=str,
         default=DEFAULT_OUT_FILE,
