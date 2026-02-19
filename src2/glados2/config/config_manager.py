@@ -55,6 +55,9 @@ class LLMConfig:
     max_tokens: int = 2048
     temperature: float = 0.7
     streaming: bool = True
+    # Gemini-specific settings
+    thinking_enabled: bool = False
+    thinking_level: str = "MEDIUM"  # MINIMAL, LOW, MEDIUM, HIGH
 
 
 @dataclass
@@ -177,6 +180,8 @@ class GladosConfig:
                 max_tokens=llm_data.get("max_tokens", config.llm.max_tokens),
                 temperature=llm_data.get("temperature", config.llm.temperature),
                 streaming=llm_data.get("streaming", config.llm.streaming),
+                thinking_enabled=llm_data.get("thinking_enabled", config.llm.thinking_enabled),
+                thinking_level=llm_data.get("thinking_level", config.llm.thinking_level),
             )
             
         # Load TTS settings
@@ -252,6 +257,8 @@ class GladosConfig:
                 "max_tokens": self.llm.max_tokens,
                 "temperature": self.llm.temperature,
                 "streaming": self.llm.streaming,
+                "thinking_enabled": self.llm.thinking_enabled,
+                "thinking_level": self.llm.thinking_level,
             },
             "tts": {
                 "voice": self.tts.voice,

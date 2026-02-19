@@ -150,6 +150,39 @@ class ToolManager:
 
         return tool_specs
 
+    def get_tools_gemini_format(self) -> List[Any]:
+        """
+        Get all tools as google-genai FunctionDeclaration objects.
+
+        Uses OpenAPI schema format as recommended by Google for Gemini 3.
+        """
+        from google.genai import types
+
+        declarations = []
+        for name, spec in self._tools.items():
+            # Convert JSON Schema properties to genai Schema objects
+            schema_properties = {}
+            for param_name, param_schema in spec.parameters.items():
+                param_type = param_schema.get("type", "string").upper()
+                schema_properties[param_name] = types.Schema(
+                    type=types.Type(param_type),
+                    description=param_schema.get("description", ""),
+                )
+
+            declarations.append(
+                types.FunctionDeclaration(
+                    name=name,
+                    description=spec.description,
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties=schema_properties,
+                        required=spec.required,
+                    ),
+                )
+            )
+
+        return declarations
+
     def has_tools(self) -> bool:
         """Check if any tools are registered."""
         return len(self._tools) > 0

@@ -12,6 +12,15 @@ from openai import OpenAI, AsyncOpenAI
 from ..core.event_bus import EventBus, EventType
 from ..core.state_manager import StateManager, AppState
 
+# Conditional import: only required when Gemini provider is used
+try:
+    from google import genai
+    from google.genai import types as genai_types
+
+    HAS_GENAI = True
+except ImportError:
+    HAS_GENAI = False
+
 if TYPE_CHECKING:
     from ..tools.tool_manager import ToolManager
 
@@ -63,9 +72,16 @@ class LLMManager:
         self._summarize_long_responses = True
         self._max_speech_words = 150  # ~30 seconds at typical speech rate
 
-        # OpenAI clients (for Gemini and OpenAI providers)
+        # OpenAI clients (for OpenAI and Ollama providers)
         self._openai_client: Optional[OpenAI] = None
         self._async_openai_client: Optional[AsyncOpenAI] = None
+
+        # Native Google GenAI client (for Gemini provider)
+        self._genai_client: Optional[Any] = None
+
+        # Gemini thinking config
+        self._thinking_enabled = False
+        self._thinking_level = "MEDIUM"
 
         # Subscribe to message events to trigger responses
         self._event_bus.subscribe(EventType.MESSAGE_RECEIVED, self._on_message_received)
@@ -105,33 +121,44 @@ class LLMManager:
 
     def _get_openai_client(self) -> Optional[OpenAI]:
         """Get or create OpenAI client configured for the provider."""
-        if self._provider == LLMProvider.GEMINI:
-            if not self._openai_client:
-                self._openai_client = OpenAI(
-                    api_key=self._api_key,
-                    base_url=self._completion_url
-                )
-            return self._openai_client
-        elif self._provider == LLMProvider.OPENAI:
+        if self._provider == LLMProvider.OPENAI:
             if not self._openai_client:
                 self._openai_client = OpenAI(api_key=self._api_key)
+            return self._openai_client
+        elif self._provider == LLMProvider.OLLAMA:
+            if not self._openai_client:
+                self._openai_client = OpenAI(
+                    api_key="ollama",
+                    base_url=self._completion_url,
+                )
             return self._openai_client
         return None
 
     def _get_async_openai_client(self) -> Optional[AsyncOpenAI]:
         """Get or create async OpenAI client."""
-        if self._provider == LLMProvider.GEMINI:
-            if not self._async_openai_client:
-                self._async_openai_client = AsyncOpenAI(
-                    api_key=self._api_key,
-                    base_url=self._completion_url
-                )
-            return self._async_openai_client
-        elif self._provider == LLMProvider.OPENAI:
+        if self._provider == LLMProvider.OPENAI:
             if not self._async_openai_client:
                 self._async_openai_client = AsyncOpenAI(api_key=self._api_key)
             return self._async_openai_client
+        elif self._provider == LLMProvider.OLLAMA:
+            if not self._async_openai_client:
+                self._async_openai_client = AsyncOpenAI(
+                    api_key="ollama",
+                    base_url=self._completion_url,
+                )
+            return self._async_openai_client
         return None
+
+    def _get_genai_client(self) -> Any:
+        """Get or create native Google GenAI client for Gemini provider."""
+        if not HAS_GENAI:
+            raise ImportError(
+                "google-genai package is required for native Gemini provider. "
+                "Install with: uv add google-genai"
+            )
+        if self._genai_client is None:
+            self._genai_client = genai.Client(api_key=self._api_key)
+        return self._genai_client
 
     async def send_message(self, message: str, streaming: bool = True) -> Optional[str]:
         """
@@ -177,19 +204,25 @@ class LLMManager:
                 self._state_manager.set_state(AppState.IDLE)
                 
     async def _send_streaming_request(self, message: str) -> Optional[str]:
-        """Send a streaming LLM request with tool support."""
+        """Send a streaming LLM request, dispatching to the appropriate provider."""
         logger.info(f"Sending streaming LLM request: {message[:50]}...")
 
         # Reset tool iteration counter for new request
         self._tool_iterations = 0
 
+        if self._provider == LLMProvider.GEMINI:
+            return await self._send_gemini_streaming_request(message)
+        else:
+            return await self._send_openai_streaming_request(message)
+
+    async def _send_openai_streaming_request(self, message: str) -> Optional[str]:
+        """Send a streaming request via OpenAI-compatible API (OpenAI/Ollama)."""
         full_response = ""
         accumulated_tool_calls: List[Dict[str, Any]] = []
 
         try:
             client = self._get_async_openai_client()
             if not client:
-                # Fallback to mock for unsupported providers
                 logger.warning(f"Provider {self._provider} not supported, using mock response")
                 return await self._send_mock_streaming_request(message)
 
@@ -277,6 +310,286 @@ class LLMManager:
                 "error": str(e)
             })
             raise
+
+    # ── Gemini-native methods ──────────────────────────────────────────
+
+    async def _send_gemini_streaming_request(self, message: str) -> Optional[str]:
+        """Send a streaming request using the native Google GenAI SDK."""
+        full_response = ""
+        accumulated_function_calls: list = []
+
+        try:
+            client = self._get_genai_client()
+
+            # Build contents from conversation history
+            contents = self._build_gemini_contents(message)
+            config = self._build_gemini_config()
+
+            # Stream response using async client
+            stream = await client.aio.models.generate_content_stream(
+                model=self._model,
+                contents=contents,
+                config=config,
+            )
+
+            async for chunk in stream:
+                if self._request_cancelled.is_set():
+                    logger.info("Gemini streaming request cancelled")
+                    return None
+
+                if not chunk.candidates:
+                    continue
+
+                candidate = chunk.candidates[0]
+                if not candidate.content or not candidate.content.parts:
+                    continue
+
+                for part in candidate.content.parts:
+                    # Skip thinking/thought parts - don't send to TTS or UI
+                    if getattr(part, "thought", False):
+                        logger.debug(f"Thinking: {getattr(part, 'text', '')[:80]}...")
+                        continue
+
+                    # Handle text content
+                    if part.text:
+                        full_response += part.text
+                        self._event_bus.publish(EventType.LLM_RESPONSE_CHUNK, {
+                            "chunk": part.text,
+                            "full_response_so_far": full_response,
+                        })
+
+                    # Handle function calls
+                    if hasattr(part, "function_call") and part.function_call:
+                        accumulated_function_calls.append(part.function_call)
+
+            # Process any function calls
+            if accumulated_function_calls and self._tool_manager:
+                return await self._handle_gemini_tool_calls(
+                    contents, accumulated_function_calls, config,
+                )
+
+            # Normal text response
+            self._conversation_history.append({"role": "assistant", "content": full_response})
+
+            self._event_bus.publish(EventType.LLM_RESPONSE_COMPLETED, {
+                "full_response": full_response,
+                "success": True,
+            })
+
+            await self._publish_assistant_response_for_tts(full_response)
+            return full_response
+
+        except Exception as e:
+            logger.error(f"Error in Gemini streaming request: {e}")
+            self._event_bus.publish(EventType.LLM_RESPONSE_COMPLETED, {
+                "full_response": full_response,
+                "success": False,
+                "error": str(e),
+            })
+            raise
+
+    def _build_gemini_contents(self, new_message: str) -> list:
+        """Convert conversation history to Gemini Content objects.
+
+        Maps OpenAI-format history dicts to genai_types.Content objects.
+        Skips tool call/result messages (these are handled inline during
+        tool calling exchanges).
+        """
+        contents = []
+
+        for msg in self._conversation_history:
+            role = msg["role"]
+            content_text = msg.get("content")
+
+            if role == "user":
+                contents.append(genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part.from_text(text=content_text)],
+                ))
+            elif role == "assistant" and content_text:
+                # "assistant" → "model" in Gemini
+                contents.append(genai_types.Content(
+                    role="model",
+                    parts=[genai_types.Part.from_text(text=content_text)],
+                ))
+            # role == "tool" or assistant with tool_calls: skip (ephemeral)
+
+        # Add the new user message
+        contents.append(genai_types.Content(
+            role="user",
+            parts=[genai_types.Part.from_text(text=new_message)],
+        ))
+
+        return contents
+
+    def _build_gemini_config(self) -> Any:
+        """Build GenerateContentConfig for Gemini requests."""
+        config_kwargs: Dict[str, Any] = {
+            "temperature": self._temperature,
+            "max_output_tokens": self._max_tokens,
+            "system_instruction": self._system_prompt,
+        }
+
+        # Add thinking config if enabled
+        if self._thinking_enabled:
+            config_kwargs["thinking_config"] = genai_types.ThinkingConfig(
+                include_thoughts=True,
+                thinking_level=self._thinking_level.upper(),
+            )
+
+        # Add tools if available
+        if self._tool_manager and self._tool_manager.has_tools():
+            config_kwargs["tools"] = self._tool_manager.get_tools_gemini_format()
+            # Disable automatic function calling - we route through ToolManager/MCP
+            config_kwargs["automatic_function_calling_config"] = (
+                genai_types.AutomaticFunctionCallingConfig(disable=True)
+            )
+
+        return genai_types.GenerateContentConfig(**config_kwargs)
+
+    async def _handle_gemini_tool_calls(
+        self,
+        contents: list,
+        function_calls: list,
+        config: Any,
+    ) -> Optional[str]:
+        """Execute Gemini function calls and continue the conversation."""
+        from ..tools.tool_types import ToolCall as ToolCallType
+
+        self._tool_iterations += 1
+
+        if self._tool_iterations > self._max_tool_iterations:
+            logger.warning(f"Max tool iterations ({self._max_tool_iterations}) reached")
+            error_msg = "I've reached the maximum number of tool calls. Please try rephrasing your request."
+            self._conversation_history.append({"role": "assistant", "content": error_msg})
+            self._event_bus.publish(EventType.LLM_RESPONSE_COMPLETED, {
+                "full_response": error_msg,
+                "success": True,
+            })
+            self._event_bus.publish(EventType.MESSAGE_RECEIVED, {
+                "role": "assistant",
+                "content": error_msg,
+            })
+            return error_msg
+
+        # Append model response with function_call parts to contents
+        model_parts = [
+            genai_types.Part.from_function_call(
+                name=fc.name,
+                args=dict(fc.args) if fc.args else {},
+            )
+            for fc in function_calls
+        ]
+        contents.append(genai_types.Content(role="model", parts=model_parts))
+
+        # Record in OpenAI-format conversation history for persistence
+        tool_calls_for_history = []
+        for i, fc in enumerate(function_calls):
+            tool_calls_for_history.append({
+                "id": f"gemini_call_{i}",
+                "function": {
+                    "name": fc.name,
+                    "arguments": json.dumps(dict(fc.args) if fc.args else {}),
+                },
+            })
+        self._conversation_history.append({
+            "role": "assistant",
+            "content": None,
+            "tool_calls": tool_calls_for_history,
+        })
+
+        # Execute each function call through ToolManager
+        response_parts = []
+        for i, fc in enumerate(function_calls):
+            arguments = dict(fc.args) if fc.args else {}
+            call_id = f"gemini_call_{i}"
+
+            tool_call = ToolCallType(id=call_id, name=fc.name, arguments=arguments)
+            logger.info(f"Executing tool: {tool_call.name}")
+            result = await self._tool_manager.execute_tool(tool_call)
+
+            result_content = "\n".join(
+                item.get("text", str(item)) for item in result.content
+            )
+
+            response_parts.append(
+                genai_types.Part.from_function_response(
+                    name=fc.name,
+                    response={"result": result_content},
+                )
+            )
+
+            # Record in OpenAI-format history
+            self._conversation_history.append({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": result_content,
+            })
+
+        # Add function responses as a user message (Google's convention)
+        contents.append(genai_types.Content(role="user", parts=response_parts))
+
+        # Continue conversation with tool results
+        return await self._continue_gemini_after_tools(contents, config)
+
+    async def _continue_gemini_after_tools(self, contents: list, config: Any) -> Optional[str]:
+        """Continue Gemini conversation after tool execution."""
+        client = self._get_genai_client()
+
+        full_response = ""
+        accumulated_function_calls: list = []
+
+        stream = await client.aio.models.generate_content_stream(
+            model=self._model,
+            contents=contents,
+            config=config,
+        )
+
+        async for chunk in stream:
+            if self._request_cancelled.is_set():
+                return None
+
+            if not chunk.candidates:
+                continue
+
+            candidate = chunk.candidates[0]
+            if not candidate.content or not candidate.content.parts:
+                continue
+
+            for part in candidate.content.parts:
+                if getattr(part, "thought", False):
+                    logger.debug(f"Thinking: {getattr(part, 'text', '')[:80]}...")
+                    continue
+
+                if part.text:
+                    full_response += part.text
+                    self._event_bus.publish(EventType.LLM_RESPONSE_CHUNK, {
+                        "chunk": part.text,
+                        "full_response_so_far": full_response,
+                    })
+
+                if hasattr(part, "function_call") and part.function_call:
+                    accumulated_function_calls.append(part.function_call)
+
+        # Chained tool calls
+        if accumulated_function_calls:
+            return await self._handle_gemini_tool_calls(
+                contents, accumulated_function_calls, config,
+            )
+
+        # Final response
+        self._tool_iterations = 0
+        self._conversation_history.append({"role": "assistant", "content": full_response})
+
+        self._event_bus.publish(EventType.LLM_RESPONSE_COMPLETED, {
+            "full_response": full_response,
+            "success": True,
+        })
+
+        await self._publish_assistant_response_for_tts(full_response)
+        return full_response
+
+    # ── End Gemini-native methods ────────────────────────────────────
 
     async def _send_mock_streaming_request(self, message: str) -> Optional[str]:
         """Mock streaming request for testing without API."""
@@ -563,9 +876,15 @@ class LLMManager:
         if "max_speech_words" in kwargs:
             self._max_speech_words = kwargs["max_speech_words"]
 
+        if "thinking_enabled" in kwargs:
+            self._thinking_enabled = kwargs["thinking_enabled"]
+        if "thinking_level" in kwargs:
+            self._thinking_level = kwargs["thinking_level"]
+
         # Reset clients to force recreation with new config
         self._openai_client = None
         self._async_openai_client = None
+        self._genai_client = None
 
         logger.info(f"LLM provider configured: {provider.value} with model {self._model}")
 
@@ -614,29 +933,38 @@ class LLMManager:
         Returns a condensed version that captures the key points
         in under max_speech_words.
         """
+        summary_prompt = (
+            f"Summarize the following response in 2-3 sentences "
+            f"(under {self._max_speech_words} words) for text-to-speech.\n"
+            f"Keep the same tone and personality. Focus on the key points.\n\n"
+            f"Response to summarize:\n{text}\n\nBrief summary:"
+        )
+
         try:
-            client = self._get_async_openai_client()
-            if not client:
-                return None
-
-            summary_prompt = f"""Summarize the following response in 2-3 sentences (under {self._max_speech_words} words) for text-to-speech.
-Keep the same tone and personality. Focus on the key points.
-
-Response to summarize:
-{text}
-
-Brief summary:"""
-
-            response = await client.chat.completions.create(
-                model=self._model,
-                messages=[{"role": "user", "content": summary_prompt}],
-                temperature=0.3,
-                max_tokens=200,
-                stream=False
-            )
-
-            summary = response.choices[0].message.content.strip()
-            return summary if summary else None
+            if self._provider == LLMProvider.GEMINI:
+                client = self._get_genai_client()
+                response = await client.aio.models.generate_content(
+                    model=self._model,
+                    contents=summary_prompt,
+                    config=genai_types.GenerateContentConfig(
+                        temperature=0.3,
+                        max_output_tokens=200,
+                    ),
+                )
+                return response.text.strip() if response.text else None
+            else:
+                client = self._get_async_openai_client()
+                if not client:
+                    return None
+                response = await client.chat.completions.create(
+                    model=self._model,
+                    messages=[{"role": "user", "content": summary_prompt}],
+                    temperature=0.3,
+                    max_tokens=200,
+                    stream=False,
+                )
+                summary = response.choices[0].message.content.strip()
+                return summary if summary else None
 
         except Exception as e:
             logger.error(f"Error getting TTS summary: {e}")

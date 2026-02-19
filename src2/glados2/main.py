@@ -79,7 +79,10 @@ class GladosApp:
             max_tool_iterations=self._config.tools.max_tool_iterations,
             # TTS summarization settings
             summarize_long_responses=self._config.tts.summarize_long_responses,
-            max_speech_words=self._config.tts.max_speech_words
+            max_speech_words=self._config.tts.max_speech_words,
+            # Gemini thinking settings
+            thinking_enabled=self._config.llm.thinking_enabled,
+            thinking_level=self._config.llm.thinking_level,
         )
         self._llm_manager.set_system_prompt(self._config.llm.system_prompt)
 
