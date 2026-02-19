@@ -211,9 +211,14 @@ class AudioManager:
 
         if new_state == AppState.LISTENING:
             self._schedule_async_task(self.start_listening())
-        elif new_state == AppState.PLAYING_AUDIO:
-            # Audio playback will be started via play_audio method
-            pass
+        elif new_state in (AppState.PROCESSING_AUDIO, AppState.CALLING_LLM,
+                           AppState.GENERATING_TTS, AppState.PLAYING_AUDIO):
+            # Stop listening whenever the pipeline moves forward or
+            # playback begins.  This prevents the mic from picking up
+            # our own audio output and triggering a feedback loop.
+            if self._audio_state == AudioState.LISTENING:
+                logger.info(f"Stopping listening — state moved to {new_state.value}")
+                self._stop_listening.set()
         elif new_state == AppState.IDLE:
             # Only stop listening if we were actually listening —
             # don't tear down everything on every IDLE transition.
@@ -300,6 +305,15 @@ class AudioManager:
         if self._microphone_muted:
             logger.warning("Cannot start listening: microphone is muted")
             return
+
+        # If the previous playback is still tearing down, give it a
+        # moment to finish so we don't race on _audio_state / streams.
+        if self._audio_state == AudioState.PLAYING:
+            logger.info("Waiting for playback to finish cleaning up...")
+            for _ in range(20):  # up to ~1s
+                await asyncio.sleep(0.05)
+                if self._audio_state != AudioState.PLAYING:
+                    break
 
         if self._audio_state == AudioState.LISTENING:
             logger.warning("Already listening")
@@ -457,6 +471,7 @@ class AudioManager:
             if self._input_stream:
                 self._input_stream.close()
                 self._input_stream = None
+            self._audio_state = AudioState.IDLE
             self._vad.reset()
             logger.info("Audio listening stopped")
             
@@ -580,7 +595,9 @@ class AudioManager:
 
             while offset < len(audio_2d):
                 if self._playback_cancelled.is_set():
-                    stream.abort()
+                    # Use stop() instead of abort() to drain the
+                    # remaining buffer cleanly and avoid an audible pop.
+                    stream.stop()
                     stream.close()
                     return False
 
@@ -636,13 +653,17 @@ class AudioManager:
             
             # Play the synthesized audio
             success = await self.play_audio(audio_data, interruptible=True)
-            
-            # Return to idle state
+
+            # Only transition to IDLE if playback completed naturally.
+            # If it was interrupted (e.g. user pressed 'l'), the TUI has
+            # already moved the state to LISTENING — don't stomp on it.
             if success:
                 self._state_manager.set_state(AppState.IDLE)
-            else:
+            elif not self._playback_cancelled.is_set():
+                # Genuine playback failure, not a user-initiated interrupt
                 self._state_manager.set_state(AppState.ERROR)
-                
+            # else: interrupted — leave state alone
+
             return success
             
         except Exception as e:

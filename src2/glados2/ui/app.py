@@ -474,37 +474,40 @@ class GladosUI(App[None]):
         """Toggle listening state."""
         current_state = self._state_manager.get_state()
 
-        # If currently playing audio, cancel playback first and start listening
-        if current_state == AppState.PLAYING_AUDIO:
-            logger.info("Cancelling playback to start listening")
-            if self._audio_manager:
-                self._audio_manager.interrupt_playback()
-            try:
-                import sounddevice as sd
-                sd.stop()
-            except Exception as e:
-                logger.warning(f"Could not stop audio: {e}")
-            # Start listening
-            self._state_manager.set_state(AppState.LISTENING)
-            self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "listening"})
-            if self._conversation_log:
-                self._conversation_log.add_message("system", "Listening...")
-            logger.info("Started listening (interrupted playback)")
-
-        elif current_state == AppState.IDLE:
-            self._state_manager.set_state(AppState.LISTENING)
-            self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "listening"})
-            if self._conversation_log:
-                self._conversation_log.add_message("system", "Listening...")
-            logger.info("Started listening")
-
-        elif current_state == AppState.LISTENING:
+        if current_state == AppState.LISTENING:
             # Stop listening and process any collected audio
             logger.info("Stopping listening - processing collected audio")
             self._event_bus.publish(EventType.LISTENING_STOPPED, {"reason": "user_request"})
             self._state_manager.set_state(AppState.IDLE)
             self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "ready"})
             logger.info("Stopped listening")
+
+        elif current_state == AppState.PLAYING_AUDIO:
+            # Cancel playback, then start listening
+            logger.info("Cancelling playback to start listening")
+            if self._audio_manager:
+                self._audio_manager.interrupt_playback()
+            # Transition through IDLE so the playback path can clean up,
+            # then immediately into LISTENING.
+            self._state_manager.set_state(AppState.IDLE)
+            self._state_manager.set_state(AppState.LISTENING)
+            self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "listening"})
+            if self._conversation_log:
+                self._conversation_log.add_message("system", "Listening...")
+            logger.info("Started listening (interrupted playback)")
+
+        elif current_state in (AppState.IDLE, AppState.ERROR):
+            self._state_manager.set_state(AppState.LISTENING)
+            self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "listening"})
+            if self._conversation_log:
+                self._conversation_log.add_message("system", "Listening...")
+            logger.info("Started listening")
+
+        else:
+            # PROCESSING_AUDIO, CALLING_LLM, GENERATING_TTS — ignore,
+            # the pipeline is busy and listening will resume when the
+            # user presses 'l' again after it returns to IDLE.
+            logger.info(f"Cannot toggle listening in state {current_state.value}")
             
     def on_key(self, event: events.Key) -> None:
         """Handle key presses globally."""
