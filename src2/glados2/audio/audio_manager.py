@@ -1,6 +1,7 @@
 """Audio management system for GLaDOS 2.0."""
 
 import asyncio
+import queue
 from typing import Optional, Callable, Tuple
 from enum import Enum
 import threading
@@ -356,8 +357,10 @@ class AudioManager:
         try:
             logger.info("Starting audio capture...")
 
-            # Audio callback for input stream
-            audio_queue = asyncio.Queue()
+            # Thread-safe queue for audio data from the PortAudio callback
+            # thread. asyncio.Queue is NOT thread-safe and must not be
+            # used from non-asyncio threads.
+            audio_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=100)
 
             def audio_callback(indata, frames, time_info, status):
                 if status:
@@ -366,7 +369,7 @@ class AudioManager:
                 audio_data = indata[:, 0].copy() if indata.ndim > 1 else indata.copy()
                 try:
                     audio_queue.put_nowait(audio_data.astype(np.float32))
-                except asyncio.QueueFull:
+                except queue.Full:
                     pass  # Drop frame if queue is full
 
             # Start input stream
@@ -384,8 +387,39 @@ class AudioManager:
             # Process audio chunks
             while not self._stop_listening.is_set():
                 try:
-                    # Get audio chunk with timeout
-                    audio_chunk = await asyncio.wait_for(audio_queue.get(), timeout=0.1)
+                    # Get audio chunk with timeout (thread-safe queue)
+                    try:
+                        audio_chunk = audio_queue.get(timeout=0.1)
+                    except queue.Empty:
+                        # No data available — check control signals
+
+                        # Check for force process signal (user pressed 'l' to stop)
+                        if self._force_process_audio.is_set():
+                            logger.info("Force processing collected audio")
+                            if self._vad.collected_audio:
+                                collected = np.concatenate(self._vad.collected_audio)
+                                if len(collected) > self._sample_rate * 0.1:  # At least 100ms
+                                    await self._process_speech_segment(collected)
+                            self._force_process_audio.clear()
+                            break
+
+                        # Check silence timeout
+                        current_time = time.time()
+                        silence_duration = current_time - self._last_audio_time
+                        if silence_duration >= self._silence_timeout_seconds:
+                            logger.info(f"Silence timeout ({self._silence_timeout_seconds}s)")
+                            if self._vad.collected_audio:
+                                collected = np.concatenate(self._vad.collected_audio)
+                                if len(collected) > self._sample_rate * 0.25:
+                                    await self._process_speech_segment(collected)
+                            self._stop_listening.set()
+                            self._state_manager.set_state(AppState.IDLE)
+                            self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "ready"})
+                            break
+
+                        # Yield to the event loop so other tasks can run
+                        await asyncio.sleep(0)
+                        continue
 
                     # Update last audio time when we receive audio
                     current_time = time.time()
@@ -417,33 +451,6 @@ class AudioManager:
                         self._state_manager.set_state(AppState.IDLE)
                         self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "ready"})
                         break
-
-                except asyncio.TimeoutError:
-                    # Check for force process signal (user pressed 'l' to stop)
-                    if self._force_process_audio.is_set():
-                        logger.info("Force processing collected audio")
-                        if self._vad.collected_audio:
-                            collected = np.concatenate(self._vad.collected_audio)
-                            if len(collected) > self._sample_rate * 0.1:  # At least 100ms
-                                await self._process_speech_segment(collected)
-                        self._force_process_audio.clear()
-                        break
-
-                    # Also check silence timeout during timeouts
-                    current_time = time.time()
-                    silence_duration = current_time - self._last_audio_time
-                    if silence_duration >= self._silence_timeout_seconds:
-                        logger.info(f"Silence timeout during wait ({self._silence_timeout_seconds}s)")
-                        if self._vad.collected_audio:
-                            collected = np.concatenate(self._vad.collected_audio)
-                            if len(collected) > self._sample_rate * 0.25:
-                                await self._process_speech_segment(collected)
-                        self._stop_listening.set()
-                        self._state_manager.set_state(AppState.IDLE)
-                        self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "ready"})
-                        break
-
-                    continue  # Check stop flag
 
                 except Exception as e:
                     logger.error(f"Error in listen loop: {e}")
