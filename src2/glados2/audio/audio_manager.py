@@ -32,20 +32,22 @@ class AudioDeviceMonitor:
     Monitors system audio devices for changes.
 
     Polls for device changes periodically and publishes events when
-    the default input or output device changes.
+    the default input or output device changes. Skips polling when
+    audio streams are active to avoid destroying PortAudio state
+    underneath open streams.
     """
 
-    # Class-level lock to prevent conflicts with audio operations
-    # when refreshing the device cache
     _refresh_lock = threading.Lock()
 
-    def __init__(self, event_bus: EventBus, poll_interval: float = 2.0):
+    def __init__(self, event_bus: EventBus, poll_interval: float = 2.0,
+                 audio_active_check: Optional[Callable[[], bool]] = None):
         self._event_bus = event_bus
         self._poll_interval = poll_interval
         self._running = False
         self._monitor_thread: Optional[threading.Thread] = None
         self._last_input_device: Optional[str] = None
         self._last_output_device: Optional[str] = None
+        self._audio_active_check = audio_active_check
 
     def start(self) -> None:
         """Start monitoring for device changes."""
@@ -53,7 +55,7 @@ class AudioDeviceMonitor:
             return
 
         self._running = True
-        # Initialize with current devices
+        # Initialize with current devices (safe — no streams active yet)
         self._last_input_device, self._last_output_device = self._get_current_devices()
 
         self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
@@ -76,9 +78,9 @@ class AudioDeviceMonitor:
         """
         with self._refresh_lock:
             try:
-                # Force PortAudio to refresh its device cache
+                # Force PortAudio to refresh its device cache.
                 # This is necessary because PortAudio caches the device list
-                # and won't detect changes without re-initialization
+                # and won't detect changes without re-initialization.
                 sd._terminate()
                 sd._initialize()
 
@@ -97,6 +99,14 @@ class AudioDeviceMonitor:
         """Main monitoring loop that polls for device changes."""
         while self._running:
             try:
+                # Skip the poll if audio I/O is active — calling
+                # sd._terminate() while a stream is open will hang or
+                # crash PortAudio.
+                if self._audio_active_check and self._audio_active_check():
+                    logger.debug("Audio active, skipping device poll")
+                    time.sleep(self._poll_interval)
+                    continue
+
                 current_input, current_output = self._get_current_devices()
 
                 input_changed = current_input != self._last_input_device
@@ -172,8 +182,13 @@ class AudioManager:
         self._silence_timeout_seconds: float = 5.0  # Auto-stop after 5 seconds of silence
         self._force_process_audio = threading.Event()  # Signal to process collected audio now
 
-        # Audio device monitor
-        self._device_monitor = AudioDeviceMonitor(event_bus, poll_interval=2.0)
+        # Audio device monitor — passes a callback so the monitor skips
+        # PortAudio refresh while streams are open.
+        self._device_monitor = AudioDeviceMonitor(
+            event_bus,
+            poll_interval=2.0,
+            audio_active_check=self._is_audio_active,
+        )
 
         # Subscribe to relevant events
         self._event_bus.subscribe(EventType.STATE_CHANGED, self._on_state_changed)
@@ -266,6 +281,14 @@ class AudioManager:
         # sounddevice typically handles this automatically, but log for debugging
         if output_changed and self._audio_state == AudioState.PLAYING:
             logger.info("Output device changed while playing - audio may switch automatically")
+
+    def _is_audio_active(self) -> bool:
+        """Return True when any audio stream is open.
+
+        Used by AudioDeviceMonitor to skip the PortAudio
+        terminate/initialize cycle that would destroy active streams.
+        """
+        return self._audio_state in (AudioState.LISTENING, AudioState.PLAYING)
 
     async def start_listening(self) -> None:
         """Start listening for voice input.
