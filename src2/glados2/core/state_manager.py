@@ -48,7 +48,7 @@ class StateManager:
     def set_state(self, new_state: AppState) -> bool:
         """
         Set a new application state.
-        
+
         Returns:
             bool: True if state change was successful, False if transition is invalid
         """
@@ -56,20 +56,22 @@ class StateManager:
             if not self._is_valid_transition(self._current_state, new_state):
                 logger.warning(f"Invalid state transition from {self._current_state.value} to {new_state.value}")
                 return False
-                
+
             old_state = self._current_state
             self._previous_state = self._current_state
             self._current_state = new_state
-            
+
             logger.info(f"State changed: {old_state.value} -> {new_state.value}")
-            
-            # Publish state change event
-            self._event_bus.publish(EventType.STATE_CHANGED, {
-                "previous_state": old_state,
-                "new_state": new_state
-            })
-            
-            return True
+
+        # Publish OUTSIDE the lock so subscribers can call set_state()
+        # without re-entering. This prevents recursive event dispatch
+        # chains from piling up while the lock is held.
+        self._event_bus.publish(EventType.STATE_CHANGED, {
+            "previous_state": old_state,
+            "new_state": new_state
+        })
+
+        return True
             
     def can_transition_to(self, target_state: AppState) -> bool:
         """Check if transition to target state is valid."""
