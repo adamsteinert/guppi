@@ -223,26 +223,21 @@ class AudioManager:
             self._schedule_async_task(self.stop_all_audio())
 
     def _schedule_async_task(self, coro) -> None:
-        """Safely schedule an async task from sync or async context.
+        """Run an async coroutine in a dedicated background thread.
 
-        This handles the case where we're called from a sync callback
-        (like EventBus.publish) and need to run async code.
+        Audio I/O operations (listening, playback) contain blocking calls
+        (queue.get, stream.write, stream.stop) that must NEVER run on the
+        Textual/UI event loop. Always spawn a new thread with its own
+        event loop so the UI stays responsive.
         """
-        try:
-            # Try to get the running event loop
-            loop = asyncio.get_running_loop()
-            # We have a running loop, create task directly
-            loop.create_task(coro)
-        except RuntimeError:
-            # No running loop - need to run in a new thread with its own loop
-            def run_in_thread():
-                try:
-                    asyncio.run(coro)
-                except Exception as e:
-                    logger.error(f"Error running async task in thread: {e}")
+        def run_in_thread():
+            try:
+                asyncio.run(coro)
+            except Exception as e:
+                logger.error(f"Error running async task in thread: {e}")
 
-            thread = threading.Thread(target=run_in_thread, daemon=True)
-            thread.start()
+        thread = threading.Thread(target=run_in_thread, daemon=True)
+        thread.start()
             
     def _on_message_received(self, event_data: dict) -> None:
         """Handle incoming messages and trigger TTS for assistant responses."""
@@ -575,21 +570,27 @@ class AudioManager:
                 dtype='float32',
                 finished_callback=playback_done.set,
             )
-
             stream.start()
-            stream.write(audio_data.reshape(-1, 1))
-            # Signal that all data has been written; playback will
-            # continue until the buffer drains, then finished_callback fires.
-            stream.stop()
 
-            # Poll until playback finishes or cancellation is requested
-            while not playback_done.is_set():
+            # Write audio in chunks so we can check for cancellation
+            # between writes. Each chunk is ~100ms of audio.
+            chunk_samples = int(self._tts.sample_rate * 0.1)
+            audio_2d = audio_data.reshape(-1, 1)
+            offset = 0
+
+            while offset < len(audio_2d):
                 if self._playback_cancelled.is_set():
                     stream.abort()
                     stream.close()
                     return False
-                await asyncio.sleep(0.01)
 
+                end = min(offset + chunk_samples, len(audio_2d))
+                stream.write(audio_2d[offset:end])
+                offset = end
+
+            # All data written — wait for buffer to drain
+            stream.stop()
+            playback_done.wait(timeout=5.0)
             stream.close()
             return True
             

@@ -88,26 +88,20 @@ class LLMManager:
             logger.error(f"Error in LLM response: {e}")
 
     def _schedule_async_task(self, coro) -> None:
-        """Safely schedule an async task from sync or async context.
+        """Run an async coroutine in a dedicated background thread.
 
-        This handles the case where we're called from a sync callback
-        (like EventBus.publish) and need to run async code.
+        LLM operations (streaming HTTP, tool execution) can take seconds
+        and must NEVER run on the Textual/UI event loop. Always spawn a
+        new thread with its own event loop so the UI stays responsive.
         """
-        try:
-            # Try to get the running event loop
-            loop = asyncio.get_running_loop()
-            # We have a running loop, create task and store reference
-            self._current_request = loop.create_task(coro)
-        except RuntimeError:
-            # No running loop - need to run in a new thread with its own loop
-            def run_in_thread():
-                try:
-                    asyncio.run(coro)
-                except Exception as e:
-                    logger.error(f"Error running async task in thread: {e}")
+        def run_in_thread():
+            try:
+                asyncio.run(coro)
+            except Exception as e:
+                logger.error(f"Error running async task in thread: {e}")
 
-            thread = threading.Thread(target=run_in_thread, daemon=True)
-            thread.start()
+        thread = threading.Thread(target=run_in_thread, daemon=True)
+        thread.start()
 
     def _get_openai_client(self) -> Optional[OpenAI]:
         """Get or create OpenAI client configured for the provider."""
