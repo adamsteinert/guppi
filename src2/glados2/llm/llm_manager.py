@@ -1,5 +1,7 @@
 """LLM management system for GLaDOS 2.0."""
 
+from __future__ import annotations
+
 import asyncio
 import threading
 from typing import Optional, AsyncGenerator, Dict, Any, List, TYPE_CHECKING
@@ -7,21 +9,13 @@ from enum import Enum
 import json
 
 from loguru import logger
-from openai import OpenAI, AsyncOpenAI
 
 from ..core.event_bus import EventBus, EventType
 from ..core.state_manager import StateManager, AppState
 
-# Conditional import: only required when Gemini provider is used
-try:
-    from google import genai
-    from google.genai import types as genai_types
-
-    HAS_GENAI = True
-except ImportError:
-    HAS_GENAI = False
-
 if TYPE_CHECKING:
+    from openai import OpenAI, AsyncOpenAI
+    from ..core.worker_loop import WorkerLoop
     from ..tools.tool_manager import ToolManager
 
 
@@ -41,10 +35,12 @@ class LLMManager:
     """
     
     def __init__(self, event_bus: EventBus, state_manager: StateManager,
-                 tool_manager: Optional["ToolManager"] = None):
+                 tool_manager: Optional["ToolManager"] = None,
+                 worker_loop: Optional["WorkerLoop"] = None):
         self._event_bus = event_bus
         self._state_manager = state_manager
         self._tool_manager = tool_manager
+        self._worker_loop = worker_loop
 
         # Configuration
         self._provider = LLMProvider.OLLAMA
@@ -104,23 +100,31 @@ class LLMManager:
             logger.error(f"Error in LLM response: {e}")
 
     def _schedule_async_task(self, coro) -> None:
-        """Run an async coroutine in a dedicated background thread.
+        """Schedule an async coroutine on the persistent worker loop.
 
-        LLM operations (streaming HTTP, tool execution) can take seconds
-        and must NEVER run on the Textual/UI event loop. Always spawn a
-        new thread with its own event loop so the UI stays responsive.
+        When a worker loop is available, dispatches to it so that MCP
+        tool connections (which are bound to the loop where they were
+        created) remain usable during tool execution.
+
+        Falls back to spawning a new thread when no worker loop is
+        configured (e.g. in unit tests).
         """
-        def run_in_thread():
-            try:
-                asyncio.run(coro)
-            except Exception as e:
-                logger.error(f"Error running async task in thread: {e}")
+        if self._worker_loop and self._worker_loop.is_running:
+            self._worker_loop.run(coro)
+        else:
+            def run_in_thread():
+                try:
+                    asyncio.run(coro)
+                except Exception as e:
+                    logger.error(f"Error running async task in thread: {e}")
 
-        thread = threading.Thread(target=run_in_thread, daemon=True)
-        thread.start()
+            thread = threading.Thread(target=run_in_thread, daemon=True)
+            thread.start()
 
     def _get_openai_client(self) -> Optional[OpenAI]:
         """Get or create OpenAI client configured for the provider."""
+        from openai import OpenAI
+
         if self._provider == LLMProvider.OPENAI:
             if not self._openai_client:
                 self._openai_client = OpenAI(api_key=self._api_key)
@@ -136,6 +140,8 @@ class LLMManager:
 
     def _get_async_openai_client(self) -> Optional[AsyncOpenAI]:
         """Get or create async OpenAI client."""
+        from openai import AsyncOpenAI
+
         if self._provider == LLMProvider.OPENAI:
             if not self._async_openai_client:
                 self._async_openai_client = AsyncOpenAI(api_key=self._api_key)
@@ -151,7 +157,9 @@ class LLMManager:
 
     def _get_genai_client(self) -> Any:
         """Get or create native Google GenAI client for Gemini provider."""
-        if not HAS_GENAI:
+        try:
+            from google import genai
+        except ImportError:
             raise ImportError(
                 "google-genai package is required for native Gemini provider. "
                 "Install with: uv add google-genai"
@@ -391,10 +399,12 @@ class LLMManager:
     def _build_gemini_contents(self, new_message: str) -> list:
         """Convert conversation history to Gemini Content objects.
 
-        Maps OpenAI-format history dicts to genai_types.Content objects.
+        Maps OpenAI-format history dicts to ``genai_types.Content`` objects.
         Skips tool call/result messages (these are handled inline during
         tool calling exchanges).
         """
+        from google.genai import types as genai_types
+
         contents = []
 
         for msg in self._conversation_history:
@@ -424,6 +434,8 @@ class LLMManager:
 
     def _build_gemini_config(self) -> Any:
         """Build GenerateContentConfig for Gemini requests."""
+        from google.genai import types as genai_types
+
         config_kwargs: Dict[str, Any] = {
             "temperature": self._temperature,
             "max_output_tokens": self._max_tokens,
@@ -454,6 +466,7 @@ class LLMManager:
         config: Any,
     ) -> Optional[str]:
         """Execute Gemini function calls and continue the conversation."""
+        from google.genai import types as genai_types
         from ..tools.tool_types import ToolCall as ToolCallType
 
         self._tool_iterations += 1
@@ -942,6 +955,8 @@ class LLMManager:
 
         try:
             if self._provider == LLMProvider.GEMINI:
+                from google.genai import types as genai_types
+
                 client = self._get_genai_client()
                 response = await client.aio.models.generate_content(
                     model=self._model,

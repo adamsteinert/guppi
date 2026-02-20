@@ -9,6 +9,7 @@ from loguru import logger
 
 from .core.event_bus import EventBus, EventType
 from .core.state_manager import StateManager, AppState
+from .core.worker_loop import WorkerLoop
 from .audio.audio_manager import AudioManager
 from .llm.llm_manager import LLMManager, LLMProvider
 from .config.config_manager import ConfigManager, GladosConfig
@@ -61,11 +62,18 @@ class GladosApp:
         if self._config.tools.enabled:
             self._tool_manager = ToolManager(self._event_bus, self._config.tools)
 
-        # Create LLM manager with tool manager
+        # Persistent worker loop for LLM + MCP tool operations.
+        # MCP connections and LLM requests must share the same event loop
+        # so that loop-bound MCP stdio sessions remain usable during tool execution.
+        self._worker_loop = WorkerLoop(name="llm-tools")
+        self._worker_loop.start()
+
+        # Create LLM manager with tool manager and worker loop
         self._llm_manager = LLMManager(
             self._event_bus,
             self._state_manager,
-            tool_manager=self._tool_manager
+            tool_manager=self._tool_manager,
+            worker_loop=self._worker_loop,
         )
 
         # Configure LLM manager from config
@@ -104,9 +112,12 @@ class GladosApp:
             self._ui._state_manager = self._state_manager
             self._ui._audio_manager = self._audio_manager
             self._ui._llm_manager = self._llm_manager
-            # Pass tool manager so it initializes inside Textual's event loop
-            # (MCP connections use async streams that must live on the running loop)
+            # Pass tool manager and worker loop so the UI can initialize
+            # tools asynchronously after Textual takes control of the
+            # terminal. Initializing before Textual starts blocks the main
+            # thread, which corrupts the display and drops keyboard input.
             self._ui._tool_manager = self._tool_manager
+            self._ui._worker_loop = self._worker_loop
             # Pass salutation config so UI can speak it on startup
             self._ui._salutation = self._config.salutation
             # Apply compact mode from config
@@ -125,9 +136,12 @@ class GladosApp:
         logger.info("Starting GLaDOS 2.0 in headless mode...")
 
         try:
-            # Initialize tool manager (connect to MCP servers)
+            # Initialize audio models
+            self._audio_manager.initialize_models()
+
+            # Initialize tools on the worker loop
             if self._tool_manager:
-                await self._tool_manager.initialize()
+                await self._worker_loop.run_await(self._tool_manager.initialize())
 
             # Initialize components
             self._state_manager.set_state(AppState.IDLE)
@@ -161,10 +175,14 @@ class GladosApp:
         print("=" * 60 + "\n")
 
         try:
-            # Initialize tool manager (connect to MCP servers)
+            # Initialize audio models
+            self._audio_manager.initialize_models()
+
+            # Initialize tools on the worker loop (same loop where LLM
+            # requests and tool calls will execute)
             if self._tool_manager:
                 print("Initializing tools...")
-                await self._tool_manager.initialize()
+                await self._worker_loop.run_await(self._tool_manager.initialize())
                 tool_names = self._tool_manager.get_tool_names()
                 if tool_names:
                     print(f"Tools available: {', '.join(tool_names)}")
@@ -275,11 +293,7 @@ class GladosApp:
         self._state_manager.set_state(AppState.SHUTTING_DOWN)
         
     def _cleanup(self) -> None:
-        """Clean up resources (sync version for UI mode).
-
-        Note: Tool manager cleanup is handled by the UI before it exits,
-        since MCP connections are bound to Textual's event loop.
-        """
+        """Clean up resources (sync version for UI mode)."""
         logger.info("Cleaning up GLaDOS 2.0...")
 
         # Cancel any ongoing operations
@@ -288,6 +302,16 @@ class GladosApp:
 
         if hasattr(self._llm_manager, 'cancel_current_request'):
             self._llm_manager.cancel_current_request()
+
+        # Clean up tool manager on the worker loop (same loop where it was initialized)
+        if self._tool_manager and self._worker_loop.is_running:
+            try:
+                future = self._worker_loop.run(self._tool_manager.cleanup())
+                future.result(timeout=10)
+            except Exception as e:
+                logger.error(f"Error cleaning up tools: {e}")
+
+        self._worker_loop.stop()
 
         # Speak valediction if configured
         if self._config.valediction:
@@ -296,7 +320,7 @@ class GladosApp:
         logger.info("Cleanup completed")
 
     async def _cleanup_async(self) -> None:
-        """Clean up resources (async version for headless mode)."""
+        """Clean up resources (async version for headless/debug mode)."""
         logger.info("Cleaning up GLaDOS 2.0...")
 
         # Cancel any ongoing operations
@@ -306,9 +330,11 @@ class GladosApp:
         if hasattr(self._llm_manager, 'cancel_current_request'):
             self._llm_manager.cancel_current_request()
 
-        # Clean up tool manager
-        if self._tool_manager:
-            await self._tool_manager.cleanup()
+        # Clean up tool manager on the worker loop
+        if self._tool_manager and self._worker_loop.is_running:
+            await self._worker_loop.run_await(self._tool_manager.cleanup())
+
+        self._worker_loop.stop()
 
         logger.info("Cleanup completed")
 

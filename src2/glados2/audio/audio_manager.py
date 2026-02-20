@@ -1,21 +1,25 @@
 """Audio management system for GLaDOS 2.0."""
 
+from __future__ import annotations
+
 import asyncio
 import queue
-from typing import Optional, Callable, Tuple
+from typing import Optional, Callable, Tuple, TYPE_CHECKING
 from enum import Enum
 import threading
 import time
 import numpy as np
 
 from loguru import logger
-import sounddevice as sd
 
 from ..core.event_bus import EventBus, EventType
 from ..core.state_manager import StateManager, AppState
-from .vad_processor import VADProcessor
-from .asr_processor import ASRProcessor
-from .tts_processor import TTSProcessor
+
+if TYPE_CHECKING:
+    import sounddevice as sd
+    from .vad_processor import VADProcessor
+    from .asr_processor import ASRProcessor
+    from .tts_processor import TTSProcessor
 
 
 class AudioState(Enum):
@@ -77,6 +81,8 @@ class AudioDeviceMonitor:
         Forces a refresh of the PortAudio device cache to detect
         system audio device changes (e.g., switching from AirPods to speakers).
         """
+        import sounddevice as sd
+
         with self._refresh_lock:
             try:
                 # Force PortAudio to refresh its device cache.
@@ -155,18 +161,20 @@ class AudioManager:
         self._speaker_muted = config.get('speaker_muted', False)
         self._volume = config.get('volume', 1.0)
         
-        # Audio processors
-        self._vad = VADProcessor(
-            sample_rate=self._sample_rate,
-            threshold=config.get('vad_threshold', 0.8),
-            min_speech_duration_ms=config.get('min_speech_duration_ms', 250),
-            min_silence_duration_ms=config.get('min_silence_duration_ms', 1000)
-        )
-        self._asr = ASRProcessor(sample_rate=self._sample_rate)
-        self._tts = TTSProcessor(
-            voice=config.get('voice', 'glados'),
-            sample_rate=config.get('tts_sample_rate', 22050)
-        )
+        # Audio processor config (models loaded later via initialize_models())
+        self._vad_kwargs = {
+            'sample_rate': self._sample_rate,
+            'threshold': config.get('vad_threshold', 0.8),
+            'min_speech_duration_ms': config.get('min_speech_duration_ms', 250),
+            'min_silence_duration_ms': config.get('min_silence_duration_ms', 1000),
+        }
+        self._tts_voice = config.get('voice', 'glados')
+        self._tts_sample_rate = config.get('tts_sample_rate', 22050)
+
+        # Audio processors (None until initialize_models() is called)
+        self._vad: Optional[VADProcessor] = None
+        self._asr: Optional[ASRProcessor] = None
+        self._tts: Optional[TTSProcessor] = None
         
         # Audio streaming
         self._input_stream: Optional[sd.InputStream] = None
@@ -197,9 +205,34 @@ class AudioManager:
         self._event_bus.subscribe(EventType.LISTENING_STOPPED, self._on_listening_stopped)
         self._event_bus.subscribe(EventType.AUDIO_DEVICE_CHANGED, self._on_audio_device_changed)
 
-        # Start device monitoring
-        self._device_monitor.start()
+        # Device monitor started later in initialize_models()
         
+    def initialize_models(self) -> None:
+        """Load audio processor ONNX models.
+
+        Call from a background thread to avoid blocking the UI during startup.
+        Heavy imports (onnxruntime, sounddevice) are deferred to here so they
+        don't block module loading.
+        """
+        from .vad_processor import VADProcessor
+        from .asr_processor import ASRProcessor
+        from .tts_processor import TTSProcessor
+
+        logger.info("Loading audio models...")
+        self._vad = VADProcessor(**self._vad_kwargs)
+        self._asr = ASRProcessor(sample_rate=self._sample_rate)
+        self._tts = TTSProcessor(
+            voice=self._tts_voice,
+            sample_rate=self._tts_sample_rate,
+        )
+        self._device_monitor.start()
+        logger.info("Audio models loaded")
+
+    @property
+    def models_loaded(self) -> bool:
+        """True when audio processor models have been loaded."""
+        return self._vad is not None and self._asr is not None and self._tts is not None
+
     def _on_state_changed(self, event_data: dict) -> None:
         """Handle application state changes.
 
@@ -302,6 +335,10 @@ class AudioManager:
 
         This method runs the listen loop and blocks until listening stops.
         """
+        if not self.models_loaded:
+            logger.warning("Cannot start listening: audio models not loaded yet")
+            return
+
         if self._microphone_muted:
             logger.warning("Cannot start listening: microphone is muted")
             return
@@ -363,6 +400,8 @@ class AudioManager:
         
     async def _listen_loop(self) -> None:
         """Main audio listening loop with VAD and ASR processing."""
+        import sounddevice as sd
+
         try:
             logger.info("Starting audio capture...")
 
@@ -570,6 +609,8 @@ class AudioManager:
                 
     async def _play_audio_async(self, audio_data: np.ndarray, interruptible: bool) -> bool:
         """Asynchronous audio playback with sounddevice."""
+        import sounddevice as sd
+
         try:
             # Ensure audio is 1D for mono playback
             if audio_data.ndim > 1:
@@ -618,14 +659,18 @@ class AudioManager:
     async def synthesize_and_play(self, text: str, voice: str = None) -> bool:
         """
         Synthesize text to speech and play it.
-        
+
         Args:
             text: Text to synthesize
             voice: Voice to use (optional)
-            
+
         Returns:
             bool: True if synthesis and playback succeeded
         """
+        if not self.models_loaded:
+            logger.warning("Cannot synthesize: audio models not loaded yet")
+            return False
+
         try:
             # Set state to TTS generation
             self._state_manager.set_state(AppState.GENERATING_TTS)

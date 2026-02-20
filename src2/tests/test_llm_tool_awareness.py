@@ -424,3 +424,61 @@ class TestEventLoopLifecycle:
         assert len(tools) == 1
         assert tools[0]["function"]["name"] == "echo"
         assert tm.has_tools() is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: Worker loop integration
+# ---------------------------------------------------------------------------
+
+class TestWorkerLoopIntegration:
+    """Verify LLMManager dispatches to the worker loop when available."""
+
+    @pytest.mark.asyncio
+    async def test_schedule_async_task_uses_worker_loop(self, event_bus, state_manager):
+        """_schedule_async_task should run on the worker loop, not a random thread."""
+        from glados2.core.worker_loop import WorkerLoop
+
+        worker = WorkerLoop(name="test")
+        worker.start()
+        try:
+            mgr = _make_llm_manager(event_bus, state_manager)
+            mgr._worker_loop = worker
+
+            execution_loop = None
+
+            async def probe():
+                nonlocal execution_loop
+                execution_loop = asyncio.get_running_loop()
+
+            mgr._schedule_async_task(probe())
+
+            # Give the worker loop time to execute
+            await asyncio.sleep(0.5)
+
+            assert execution_loop is worker.loop
+        finally:
+            worker.stop()
+
+    @pytest.mark.asyncio
+    async def test_schedule_async_task_fallback_without_worker(self, event_bus, state_manager):
+        """Without a worker loop, _schedule_async_task should spawn a thread."""
+        mgr = _make_llm_manager(event_bus, state_manager)
+        # No worker loop set (the default)
+
+        execution_loop = None
+        done = asyncio.Event()
+
+        async def probe():
+            nonlocal execution_loop
+            execution_loop = asyncio.get_running_loop()
+            # Signal from the worker thread won't set our event directly,
+            # so we just store the loop reference.
+
+        mgr._schedule_async_task(probe())
+
+        # Give the background thread time
+        await asyncio.sleep(0.5)
+
+        # It ran on SOME loop, but not the test's loop
+        assert execution_loop is not None
+        assert execution_loop is not asyncio.get_running_loop()
