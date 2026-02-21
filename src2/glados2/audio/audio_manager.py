@@ -519,6 +519,7 @@ class AudioManager:
                 self._input_stream = None
             self._audio_state = AudioState.IDLE
             self._vad.reset()
+            self._event_bus.publish(EventType.AUDIO_STATUS_CHANGED, {"status": "ready"})
             logger.info("Audio listening stopped")
             
     async def _process_speech_segment(self, audio_data: np.ndarray) -> bool:
