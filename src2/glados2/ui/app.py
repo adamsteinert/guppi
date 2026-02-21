@@ -374,6 +374,13 @@ class GladosUI(App[None]):
                 except Exception as e:
                     logger.error(f"Failed to load audio models: {e}")
 
+            # Query audio devices while on this thread (sounddevice is
+            # already initialised by the device monitor that started
+            # inside initialize_models).
+            device_info = self._query_audio_devices()
+            if device_info:
+                self.call_from_thread(self._display_audio_devices, *device_info)
+
             # Initialize MCP tools on the worker loop
             if self._tool_manager and self._worker_loop:
                 try:
@@ -399,6 +406,37 @@ class GladosUI(App[None]):
                 "system", f"Tools loaded: {', '.join(tool_names)}"
             )
 
+    @staticmethod
+    def _query_audio_devices() -> tuple[str, str] | None:
+        """Query default audio device names (safe to call from any thread)."""
+        try:
+            import sounddevice as sd
+
+            default_input = sd.query_devices(kind='input')
+            default_output = sd.query_devices(kind='output')
+            mic = (default_input.get('name', 'Unknown') if default_input else 'None')
+            spk = (default_output.get('name', 'Unknown') if default_output else 'None')
+            max_len = 25
+            if len(mic) > max_len:
+                mic = mic[:max_len - 3] + "..."
+            if len(spk) > max_len:
+                spk = spk[:max_len - 3] + "..."
+            return mic, spk
+        except Exception as e:
+            logger.warning(f"Could not query audio devices: {e}")
+            return None
+
+    def _display_audio_devices(self, mic_name: str, speaker_name: str) -> None:
+        """Update the audio device widgets (must run on the main thread)."""
+        try:
+            self.query_one("#mic_device", Static).update(f"Mic: [cyan]{mic_name}[/]")
+            self.query_one("#speaker_device", Static).update(f"Speaker: [cyan]{speaker_name}[/]")
+            if self._compact_mode:
+                self._update_compact_devices()
+            logger.debug(f"Audio devices - Input: {mic_name}, Output: {speaker_name}")
+        except Exception:
+            pass
+
     def _finish_initialization(self) -> None:
         """Complete initialization after tools are ready."""
         self._state_manager.set_state(AppState.IDLE)
@@ -408,9 +446,6 @@ class GladosUI(App[None]):
 
         logger.info("All services initialized successfully")
 
-        # Update audio device info
-        self._update_audio_device_info()
-
         # Speak salutation if configured
         if self._salutation and self._audio_manager:
             logger.info(f"Speaking salutation: {self._salutation}")
@@ -418,49 +453,6 @@ class GladosUI(App[None]):
                 self._audio_manager.synthesize_and_play(self._salutation)
             )
 
-    def _update_audio_device_info(self) -> None:
-        """Query and display current audio input/output devices."""
-        try:
-            import sounddevice as sd
-
-            # Get default devices
-            default_input = sd.query_devices(kind='input')
-            default_output = sd.query_devices(kind='output')
-
-            # Get device names (truncate if too long)
-            mic_name = default_input.get('name', 'Unknown') if default_input else 'None'
-            speaker_name = default_output.get('name', 'Unknown') if default_output else 'None'
-
-            # Truncate long names
-            max_len = 25
-            if len(mic_name) > max_len:
-                mic_name = mic_name[:max_len-3] + "..."
-            if len(speaker_name) > max_len:
-                speaker_name = speaker_name[:max_len-3] + "..."
-
-            # Update UI widgets
-            mic_widget = self.query_one("#mic_device", Static)
-            speaker_widget = self.query_one("#speaker_device", Static)
-
-            mic_widget.update(f"Mic: [cyan]{mic_name}[/]")
-            speaker_widget.update(f"Speaker: [cyan]{speaker_name}[/]")
-
-            # Update compact device line
-            if self._compact_mode:
-                self._update_compact_devices()
-
-            logger.debug(f"Audio devices - Input: {mic_name}, Output: {speaker_name}")
-
-        except Exception as e:
-            logger.warning(f"Could not query audio devices: {e}")
-            try:
-                mic_widget = self.query_one("#mic_device", Static)
-                speaker_widget = self.query_one("#speaker_device", Static)
-                mic_widget.update("Mic: [red]Error[/]")
-                speaker_widget.update("Speaker: [red]Error[/]")
-            except Exception:
-                pass
-            
     def _on_state_changed(self, event_data: dict) -> None:
         """Handle state changes from the state manager."""
         new_state = event_data.get("new_state")
