@@ -138,10 +138,12 @@ class GladosUI(App[None]):
     }
 
     #conversation_log {
+        width: 1fr;
         height: 1fr;
     }
 
     #debug_log {
+        width: 1fr;
         height: 1fr;
         display: none;
     }
@@ -374,12 +376,20 @@ class GladosUI(App[None]):
                 except Exception as e:
                     logger.error(f"Failed to load audio models: {e}")
 
-            # Query audio devices while on this thread (sounddevice is
-            # already initialised by the device monitor that started
-            # inside initialize_models).
-            device_info = self._query_audio_devices()
-            if device_info:
-                self.call_from_thread(self._display_audio_devices, *device_info)
+            # Read cached device names from the device monitor (set during
+            # initialize_models → device_monitor.start).  Avoids a second
+            # sd.query_devices() call that races with the monitor's
+            # _terminate/_initialize cycle.
+            if self._audio_manager:
+                mic, spk = self._audio_manager._device_monitor.current_devices
+                mic = mic or "Unknown"
+                spk = spk or "Unknown"
+                max_len = 25
+                if len(mic) > max_len:
+                    mic = mic[:max_len - 3] + "..."
+                if len(spk) > max_len:
+                    spk = spk[:max_len - 3] + "..."
+                self.call_from_thread(self._display_audio_devices, mic, spk)
 
             # Initialize MCP tools on the worker loop
             if self._tool_manager and self._worker_loop:
@@ -405,26 +415,6 @@ class GladosUI(App[None]):
             self._conversation_log.add_message(
                 "system", f"Tools loaded: {', '.join(tool_names)}"
             )
-
-    @staticmethod
-    def _query_audio_devices() -> tuple[str, str] | None:
-        """Query default audio device names (safe to call from any thread)."""
-        try:
-            import sounddevice as sd
-
-            default_input = sd.query_devices(kind='input')
-            default_output = sd.query_devices(kind='output')
-            mic = (default_input.get('name', 'Unknown') if default_input else 'None')
-            spk = (default_output.get('name', 'Unknown') if default_output else 'None')
-            max_len = 25
-            if len(mic) > max_len:
-                mic = mic[:max_len - 3] + "..."
-            if len(spk) > max_len:
-                spk = spk[:max_len - 3] + "..."
-            return mic, spk
-        except Exception as e:
-            logger.warning(f"Could not query audio devices: {e}")
-            return None
 
     def _display_audio_devices(self, mic_name: str, speaker_name: str) -> None:
         """Update the audio device widgets (must run on the main thread)."""

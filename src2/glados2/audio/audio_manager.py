@@ -139,6 +139,11 @@ class AudioDeviceMonitor:
 
             time.sleep(self._poll_interval)
 
+    @property
+    def current_devices(self) -> tuple[str | None, str | None]:
+        """Return the last-known (input, output) device names."""
+        return self._last_input_device, self._last_output_device
+
 
 class AudioManager:
     """
