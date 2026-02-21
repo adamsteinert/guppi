@@ -10,11 +10,13 @@ audio:
   volume: 1.0
 llm:
   api_key: ${GEMINI_API_KEY}
-  completion_url: https://generativelanguage.googleapis.com/v1beta/openai/
-  max_tokens: 2048
-  model: ${GEMINI_MODEL}
+  model: gemini-3-flash-preview
   provider: gemini
   streaming: true
+  thinking_enabled: true
+  thinking_level: MEDIUM
+  max_tokens: 2048
+  temperature: 1.0  # Keep at 1.0 for reasoning models
   system_prompt: |
     You are a sophisticated AI assistant combining the refined demeanor of an English butler with JARVIS's technical acumen and dry wit. You address the user as "sir" and maintain a tone that is professional yet personable.
 
@@ -47,18 +49,35 @@ llm:
     - Listing multiple options when one clear recommendation exists
     - Meta-commentary about your capabilities
 
-  temperature: 0.7
+    You have access to tools for managing projects and tasks. Use them when appropriate to help the user.
+
 log_level: INFO
 tts:
   quality: high
   speed: 1.0
   voice: bm_george
-  summarize_long_responses: true  # Enable/disable summarization
-  max_speech_words: 100          # Word limit (~30 seconds of speech)  
+  summarize_long_responses: true
+  max_speech_words: 100
 ui:
   auto_scroll: true
+  compact_mode: false
   font_size: medium
   show_debug: false
   theme: dark
+tools:
+  enabled: false
+  tool_timeout_seconds: 30.0
+  max_tool_iterations: 5
+  mcp_servers:
+    - name: mcp-guppi
+      command: uv
+      args:
+        - "--directory"
+        - "/Users/adams/source/production/mcp-guppi"
+        - "run"
+        - "mcp-guppi"
+      env:
+        PROJECTS_FILE: "/Users/adams/source/production/mcp-guppi/data/projects.md"
+      enabled: true
 wake_word: null
 wake_word_variants: ''

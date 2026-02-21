@@ -808,7 +808,10 @@ class GladosUI(App[None]):
         """Final quit steps after async cleanup."""
         # Remove the custom logger sink
         if self._logger_sink_id is not None:
-            logger.remove(self._logger_sink_id)
+            try:
+                logger.remove(self._logger_sink_id)
+            except ValueError:
+                pass  # Already removed by Textual's shutdown
             self._logger_sink_id = None
 
         self._state_manager.set_state(AppState.SHUTTING_DOWN)
