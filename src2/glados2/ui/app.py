@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 import sys
 import threading
+import time
 from typing import ClassVar, Optional
 
 from loguru import logger
@@ -214,6 +215,9 @@ class GladosUI(App[None]):
         self._message_input: Optional[Input] = None
         self._show_debug = False
         self._logger_sink_id = None
+        self._services_ready = False  # True after all services initialized
+        self._log_buffer: list[str] = []  # Buffer log messages during init
+        self._last_warmup_msg_time: float = 0.0  # Debounce "warming up" messages
         self._text_input_mode = False  # Track if we're in text input mode
         self._compact_mode = False  # Compact mode (may be overridden by config injection)
 
@@ -230,12 +234,13 @@ class GladosUI(App[None]):
         # Salutation to speak on startup (injected by main app)
         self._salutation: Optional[str] = None
 
-        # Register for events
-        self._event_bus.subscribe(EventType.STATE_CHANGED, self._on_state_changed)
-        self._event_bus.subscribe(EventType.MESSAGE_RECEIVED, self._on_message_received)
-        self._event_bus.subscribe(EventType.AUDIO_STATUS_CHANGED, self._on_audio_status_changed)
-        self._event_bus.subscribe(EventType.LLM_RESPONSE_COMPLETED, self._on_llm_response)
-        self._event_bus.subscribe(EventType.LLM_RESPONSE_CHUNK, self._on_llm_response_chunk)
+        # Register for events — wrapped so callbacks always run on
+        # Textual's main thread even when published from background threads.
+        self._event_bus.subscribe(EventType.STATE_CHANGED, self._on_main_thread(self._on_state_changed))
+        self._event_bus.subscribe(EventType.MESSAGE_RECEIVED, self._on_main_thread(self._on_message_received))
+        self._event_bus.subscribe(EventType.AUDIO_STATUS_CHANGED, self._on_main_thread(self._on_audio_status_changed))
+        self._event_bus.subscribe(EventType.LLM_RESPONSE_COMPLETED, self._on_main_thread(self._on_llm_response))
+        self._event_bus.subscribe(EventType.LLM_RESPONSE_CHUNK, self._on_main_thread(self._on_llm_response_chunk))
 
     @property
     def event_bus(self) -> EventBus:
@@ -260,6 +265,39 @@ class GladosUI(App[None]):
     def display_response(self, content: str) -> None:
         """Convenience method to display an assistant response."""
         self.display_message("assistant", content)
+
+    def _on_main_thread(self, callback):
+        """Wrap *callback* so it always runs on Textual's main thread.
+
+        EventBus.publish() runs subscribers synchronously in the
+        publisher's thread.  When published from a background thread
+        (AudioManager, LLMManager) the callback would mutate Textual
+        widgets from the wrong thread.  This wrapper uses
+        ``call_from_thread`` (thread-safe) so the callback runs on
+        the main event loop.
+        """
+        def wrapper(event_data: dict) -> None:
+            if threading.current_thread() is threading.main_thread():
+                callback(event_data)
+            else:
+                try:
+                    self.call_from_thread(callback, event_data)
+                except Exception:
+                    pass  # App may be shutting down
+        return wrapper
+
+    def _guard_not_ready(self) -> bool:
+        """Return ``True`` (and show a debounced message) if not yet ready."""
+        if not self._services_ready:
+            now = time.monotonic()
+            if now - self._last_warmup_msg_time > 2.0:
+                self._last_warmup_msg_time = now
+                if self._conversation_log:
+                    self._conversation_log.add_message(
+                        "system", "Warming up... please wait."
+                    )
+            return True
+        return False
 
     def compose(self) -> ComposeResult:
         """Compose the main UI layout."""
@@ -311,8 +349,13 @@ class GladosUI(App[None]):
         
     def _logger_sink(self, message: str) -> None:
         """Custom logger sink that writes to the debug log widget."""
+        msg = message.rstrip()
+        if not self._services_ready:
+            # Buffer during init to avoid flooding Textual's message
+            # queue and starving the render cycle.
+            self._log_buffer.append(msg)
+            return
         if self._debug_log:
-            msg = message.rstrip()
             # Check if we're on the main thread or a background thread
             # call_from_thread only works from background threads
             if threading.current_thread() is threading.main_thread():
@@ -431,6 +474,17 @@ class GladosUI(App[None]):
         """Complete initialization after tools are ready."""
         self._state_manager.set_state(AppState.IDLE)
 
+        # Mark ready and flush buffered log messages in one batch on the
+        # main thread (debug log is hidden by default so this is cheap).
+        self._services_ready = True
+        if self._debug_log and self._log_buffer:
+            for msg in self._log_buffer:
+                try:
+                    self._debug_log.write(msg)
+                except Exception:
+                    pass
+            self._log_buffer.clear()
+
         if self._conversation_log:
             self._conversation_log.add_message("system", "GLaDOS 2.0 initialized successfully")
 
@@ -514,25 +568,8 @@ class GladosUI(App[None]):
         """Handle completed LLM responses."""
         # LLM manager publishes with "full_response" key
         content = event_data.get("full_response", "") or event_data.get("content", "")
-        logger.debug(f"_on_llm_response called with content length: {len(content)}")
-
         if content and self._conversation_log:
-            # Try direct call first (works if on main thread)
-            try:
-                self._conversation_log.add_message("assistant", content)
-                logger.debug("Added assistant message directly")
-            except Exception as e:
-                # Fall back to call_from_thread if needed
-                logger.debug(f"Direct call failed ({e}), trying call_from_thread")
-                try:
-                    self.call_from_thread(
-                        self._conversation_log.add_message,
-                        "assistant",
-                        content
-                    )
-                except Exception as e2:
-                    logger.error(f"Failed to add message: {e2}")
-
+            self._conversation_log.add_message("assistant", content)
         if content:
             logger.info(f"LLM response displayed: {content[:50]}...")
 
@@ -554,6 +591,8 @@ class GladosUI(App[None]):
         
     def action_toggle_listening(self) -> None:
         """Toggle listening state."""
+        if self._guard_not_ready():
+            return
         current_state = self._state_manager.get_state()
 
         if current_state == AppState.LISTENING:
@@ -625,6 +664,8 @@ class GladosUI(App[None]):
 
     def action_interrupt(self) -> None:
         """Interrupt current operation and stop audio playback."""
+        if self._guard_not_ready():
+            return
         logger.info("Interrupt requested - stopping all audio")
 
         # Publish interrupt event for other components to handle
@@ -648,6 +689,8 @@ class GladosUI(App[None]):
         
     def action_toggle_microphone(self) -> None:
         """Toggle microphone mute."""
+        if self._guard_not_ready():
+            return
         if self._audio_manager:
             current = self._audio_manager.is_microphone_muted()
             self._audio_manager.set_microphone_muted(not current)
@@ -658,6 +701,8 @@ class GladosUI(App[None]):
 
     def action_toggle_speaker(self) -> None:
         """Toggle speaker mute."""
+        if self._guard_not_ready():
+            return
         if self._audio_manager:
             current = self._audio_manager.is_speaker_muted()
             self._audio_manager.set_speaker_muted(not current)
@@ -668,6 +713,8 @@ class GladosUI(App[None]):
         
     def action_enter_text_mode(self) -> None:
         """Enter text input mode."""
+        if self._guard_not_ready():
+            return
         if not self._text_input_mode:
             self._text_input_mode = True
             if self._message_input:

@@ -486,8 +486,10 @@ class AudioManager:
 
                     if completed_audio is not None:
                         logger.info("Speech segment detected, transcribing...")
-                        await self._process_speech_segment(completed_audio)
-                        # Reset timer after processing
+                        success = await self._process_speech_segment(completed_audio)
+                        if success:
+                            break  # Transcription sent to LLM; exit listen loop
+                        # Transcription failed — keep listening
                         self._last_audio_time = time.time()
 
                     # Check for silence timeout (5 seconds without voice)
@@ -519,15 +521,18 @@ class AudioManager:
             self._vad.reset()
             logger.info("Audio listening stopped")
             
-    async def _process_speech_segment(self, audio_data: np.ndarray) -> None:
-        """Process a detected speech segment through ASR and send to LLM."""
+    async def _process_speech_segment(self, audio_data: np.ndarray) -> bool:
+        """Process a detected speech segment through ASR and send to LLM.
+
+        Returns True if transcription succeeded and was published.
+        """
         try:
             # Update state to processing
             self._state_manager.set_state(AppState.PROCESSING_AUDIO)
-            
+
             # Transcribe audio
             transcription = await self._asr.transcribe_audio(audio_data)
-            
+
             if transcription:
                 logger.info(f"Transcription: {transcription}")
 
@@ -542,14 +547,17 @@ class AudioManager:
 
                 # Stay in PROCESSING_AUDIO state - LLM manager will transition
                 # to CALLING_LLM when it starts processing the message
+                return True
 
             else:
                 logger.warning("Transcription failed")
                 self._state_manager.set_state(AppState.IDLE)
-                
+                return False
+
         except Exception as e:
             logger.error(f"Error processing speech segment: {e}")
             self._state_manager.set_state(AppState.ERROR)
+            return False
         
     async def play_audio(self, audio_data: np.ndarray, interruptible: bool = True) -> bool:
         """
