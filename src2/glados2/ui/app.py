@@ -1,6 +1,8 @@
 """Stable Text UI for GLaDOS 2.0."""
 
 import asyncio
+import io
+import logging
 from pathlib import Path
 import sys
 import threading
@@ -97,6 +99,46 @@ Press [bold]Esc[/bold] to close this help screen.
         dialog = self.query_one("#help_dialog")
         dialog.border_title = "Help"
         dialog.border_subtitle = "Press Esc to close"
+
+
+class _InterceptHandler(logging.Handler):
+    """Forward standard-library ``logging`` records to loguru."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        logger.opt(depth=6, exception=record.exc_info).log(level, record.getMessage())
+
+
+class _LoguruWriter:
+    """File-like object that redirects writes to loguru at *level*."""
+
+    def __init__(self, level: str = "DEBUG"):
+        self._level = level
+        self._buf = ""
+
+    def write(self, msg: str) -> int:
+        # Buffer partial lines; flush on newline
+        self._buf += msg
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            line = line.rstrip()
+            if line:
+                logger.opt(depth=1).log(self._level, line)
+        return len(msg)
+
+    def flush(self) -> None:
+        if self._buf.strip():
+            logger.opt(depth=1).log(self._level, self._buf.rstrip())
+            self._buf = ""
+
+    def fileno(self) -> int:
+        raise io.UnsupportedOperation("LoguruWriter has no file descriptor")
+
+    def isatty(self) -> bool:
+        return False
 
 
 class GladosUI(App[None]):
@@ -214,6 +256,9 @@ class GladosUI(App[None]):
         self._message_input: Optional[Input] = None
         self._show_debug = False
         self._logger_sink_id = None
+        self._logging_handler: Optional[_InterceptHandler] = None
+        self._orig_stdout: Optional[object] = None
+        self._orig_stderr: Optional[object] = None
         self._text_input_mode = False  # Track if we're in text input mode
         self._compact_mode = False  # Compact mode (may be overridden by config injection)
 
@@ -340,6 +385,17 @@ class GladosUI(App[None]):
             colorize=True,
             level="TRACE"  # Capture all log levels (TRACE and above)
         )
+
+        # Intercept standard-library logging (onnxruntime, openai, httpx, etc.)
+        self._logging_handler = _InterceptHandler()
+        logging.basicConfig(handlers=[self._logging_handler], level=logging.DEBUG, force=True)
+
+        # Redirect stdout/stderr so print() and C-level output reach the
+        # debug widget.  Keep originals so we can restore on exit.
+        self._orig_stdout = sys.stdout
+        self._orig_stderr = sys.stderr
+        sys.stdout = _LoguruWriter("INFO")
+        sys.stderr = _LoguruWriter("WARNING")
 
         logger.info("GLaDOS 2.0 UI starting...")
 
@@ -759,7 +815,20 @@ class GladosUI(App[None]):
 
     def _finalize_quit(self) -> None:
         """Final quit steps after async cleanup."""
-        # Remove the custom logger sink
+        # Restore stdout/stderr before removing the loguru sink
+        if self._orig_stdout is not None:
+            sys.stdout = self._orig_stdout
+            self._orig_stdout = None
+        if self._orig_stderr is not None:
+            sys.stderr = self._orig_stderr
+            self._orig_stderr = None
+
+        # Remove the standard-library logging intercept
+        if self._logging_handler is not None:
+            logging.root.removeHandler(self._logging_handler)
+            self._logging_handler = None
+
+        # Remove the custom loguru sink
         if self._logger_sink_id is not None:
             logger.remove(self._logger_sink_id)
             self._logger_sink_id = None
