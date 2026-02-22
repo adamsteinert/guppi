@@ -22,6 +22,7 @@ except ImportError:
 
 from .tts_glados import GladosSynthesizer
 from .tts_kokoro import KokoroSynthesizer
+from .spoken_text_converter import SpokenTextConverter
 
 
 class TTSProcessor:
@@ -52,6 +53,9 @@ class TTSProcessor:
         self.sample_rate = sample_rate
         self._lock = threading.Lock()
         self._cancelled = threading.Event()
+
+        # Text normalizer (converts numbers, currency, etc. to words for TTS)
+        self._text_converter = SpokenTextConverter()
 
         # Synthesizer instances
         self.glados_synthesizer: Optional[GladosSynthesizer] = None
@@ -128,6 +132,11 @@ class TTSProcessor:
             if self._cancelled.is_set():
                 logger.debug("Synthesis cancelled before starting")
                 return None
+
+            # Normalize text: convert numbers, currency, etc. to spoken words
+            # so the phonemizer can handle them (it can't pronounce raw digits)
+            text = self._text_converter.text_to_spoken(text)
+            logger.debug(f"Normalized text for TTS: {text[:80]}...")
 
             # Route to appropriate synthesizer based on voice
             if voice == "glados":
