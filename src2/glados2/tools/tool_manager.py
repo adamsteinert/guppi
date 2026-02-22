@@ -152,9 +152,12 @@ class ToolManager:
 
     def get_tools_gemini_format(self) -> List[Any]:
         """
-        Get all tools as google-genai FunctionDeclaration objects.
+        Get tools as a google-genai Tool list for GenerateContentConfig.
 
-        Uses OpenAPI schema format as recommended by Google for Gemini 3.
+        Returns a single-element list containing a Tool object that wraps
+        all FunctionDeclarations.  Passing bare FunctionDeclaration objects
+        to GenerateContentConfig silently drops them (function_declarations
+        becomes None), so they must be wrapped in a Tool.
         """
         from google.genai import types
 
@@ -181,7 +184,7 @@ class ToolManager:
                 )
             )
 
-        return declarations
+        return [types.Tool(function_declarations=declarations)]
 
     def has_tools(self) -> bool:
         """Check if any tools are registered."""

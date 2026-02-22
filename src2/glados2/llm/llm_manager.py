@@ -325,6 +325,10 @@ class LLMManager:
         """Send a streaming request using the native Google GenAI SDK."""
         full_response = ""
         accumulated_function_calls: list = []
+        # Preserve all raw model parts (including thoughts with signatures)
+        # so that thought_signature metadata is not lost when sending
+        # function call results back to the API.
+        raw_model_parts: list = []
 
         try:
             client = self._get_genai_client()
@@ -353,6 +357,8 @@ class LLMManager:
                     continue
 
                 for part in candidate.content.parts:
+                    raw_model_parts.append(part)
+
                     # Skip thinking/thought parts - don't send to TTS or UI
                     if getattr(part, "thought", False):
                         logger.debug(f"Thinking: {getattr(part, 'text', '')[:80]}...")
@@ -374,6 +380,7 @@ class LLMManager:
             if accumulated_function_calls and self._tool_manager:
                 return await self._handle_gemini_tool_calls(
                     contents, accumulated_function_calls, config,
+                    raw_model_parts=raw_model_parts,
                 )
 
             # Normal text response
@@ -449,11 +456,11 @@ class LLMManager:
                 thinking_level=self._thinking_level.upper(),
             )
 
-        # Add tools if available
+        # Add tools if available (we handle function calls manually via ToolManager)
         if self._tool_manager and self._tool_manager.has_tools():
             config_kwargs["tools"] = self._tool_manager.get_tools_gemini_format()
             # Disable automatic function calling - we route through ToolManager/MCP
-            config_kwargs["automatic_function_calling_config"] = (
+            config_kwargs["automatic_function_calling"] = (
                 genai_types.AutomaticFunctionCallingConfig(disable=True)
             )
 
@@ -464,6 +471,8 @@ class LLMManager:
         contents: list,
         function_calls: list,
         config: Any,
+        *,
+        raw_model_parts: Optional[list] = None,
     ) -> Optional[str]:
         """Execute Gemini function calls and continue the conversation."""
         from google.genai import types as genai_types
@@ -485,15 +494,20 @@ class LLMManager:
             })
             return error_msg
 
-        # Append model response with function_call parts to contents
-        model_parts = [
-            genai_types.Part.from_function_call(
-                name=fc.name,
-                args=dict(fc.args) if fc.args else {},
-            )
-            for fc in function_calls
-        ]
-        contents.append(genai_types.Content(role="model", parts=model_parts))
+        # Append model response to contents, preserving original parts
+        # (including thought signatures required by thinking mode).
+        if raw_model_parts:
+            contents.append(genai_types.Content(role="model", parts=raw_model_parts))
+        else:
+            # Fallback: reconstruct from function_calls (no thinking mode)
+            model_parts = [
+                genai_types.Part.from_function_call(
+                    name=fc.name,
+                    args=dict(fc.args) if fc.args else {},
+                )
+                for fc in function_calls
+            ]
+            contents.append(genai_types.Content(role="model", parts=model_parts))
 
         # Record in OpenAI-format conversation history for persistence
         tool_calls_for_history = []
@@ -551,6 +565,7 @@ class LLMManager:
 
         full_response = ""
         accumulated_function_calls: list = []
+        raw_model_parts: list = []
 
         stream = await client.aio.models.generate_content_stream(
             model=self._model,
@@ -570,6 +585,8 @@ class LLMManager:
                 continue
 
             for part in candidate.content.parts:
+                raw_model_parts.append(part)
+
                 if getattr(part, "thought", False):
                     logger.debug(f"Thinking: {getattr(part, 'text', '')[:80]}...")
                     continue
@@ -588,6 +605,7 @@ class LLMManager:
         if accumulated_function_calls:
             return await self._handle_gemini_tool_calls(
                 contents, accumulated_function_calls, config,
+                raw_model_parts=raw_model_parts,
             )
 
         # Final response
