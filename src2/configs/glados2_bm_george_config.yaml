@@ -1,4 +1,6 @@
 announcement: null
+salutation: "At your service."
+valediction: "At your service."
 audio:
   buffer_size_ms: 800
   interruptible: true
@@ -65,7 +67,7 @@ ui:
   show_debug: false
   theme: dark
 tools:
-  enabled: false
+  enabled: true
   tool_timeout_seconds: 30.0
   max_tool_iterations: 5
   mcp_servers:

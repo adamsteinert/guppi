@@ -4,174 +4,183 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-GLaDOS is a voice assistant project that recreates the GLaDOS personality from Portal. It's a Python-based system using uv for dependency management that combines real-time audio processing, speech recognition, text-to-speech, and LLM integration for low-latency voice interactions.
+GLaDOS is a voice assistant project built in Python using uv for dependency management. It combines real-time audio processing, speech recognition, text-to-speech, and LLM integration for low-latency voice interactions.
 
-**Two versions exist:**
-- `src/` - Original GLaDOS implementation (stable, production)
-- `src2/` - GLaDOS 2.0 refactor (in development, event-driven architecture)
+**Active codebase:** `src2/` - Event-driven architecture with pub-sub messaging, tool/MCP integration, and Textual TUI.
+
+> `src/` is **deprecated** and should not be used for new development.
 
 ## Development Commands
 
-### GLaDOS 1.0 (Original - src/)
-- `uv run glados download` - Download required AI model files (ASR, TTS, VAD models)
-- `uv run glados start --config configs/dev_config.yaml` - Start GLaDOS with development config
-- `uv run glados tui --config configs/dev_config.yaml` - Start with terminal UI
-- `uv run glados say "text"` - Generate speech from text
-- `uv run glados saytofile "text" --outfile temp.mp3` - Save speech to file
+### Running GLaDOS
+- `./run_glados2.sh` - Quick start with default Gemini config
+- `cd src2 && uv run python -m glados2.main --config ../configs/glados2_gem_config.yaml` - Start with specific config
+- `cd src2 && uv run python -m glados2.main --headless --config ../configs/glados2_gem_config.yaml` - Headless mode (no TUI)
+- `cd src2 && uv run python -m glados2.main --debug --config ../configs/glados2_gem_config.yaml` - Debug mode (terminal input, no voice)
+- `cd src2 && uv run python -m glados2.main say "text"` - Generate and play speech
+- `cd src2 && uv run python -m glados2.main saytofile "text" --outfile audio.wav` - Save speech to file
 
-### GLaDOS 2.0 (Refactor - src2/)
-- `cd src2 && uv run python -m glados2.main --config ../configs/glados2_gem_config.yaml` - Start GLaDOS 2.0
-- `cd src2 && uv run pytest tests/ -v` - Run GLaDOS 2.0 tests
+### Model Download (uses v1 CLI)
+- `uv run glados download` - Download required AI model files (ASR, TTS, VAD models)
 
 ### Testing and Development
-- `pytest` - Run all tests
+- `cd src2 && uv run pytest tests/ -v` - Run tests
 - `ruff check` - Run linting
 - `ruff format` - Format code
-- `./go.sh` - Quick development start (uses dev_config.yaml)
 
 ### Configuration Files
-- `configs/glados_config.yaml` - Main configuration (v1)
-- `configs/dev_config.yaml` - Development configuration (v1)
-- `configs/glados2_gem_config.yaml` - GLaDOS 2.0 with Gemini
-- `configs/assistant_config.yaml` - Alternative personality configuration
+- `configs/glados2_gem_config.yaml` - Gemini with GLaDOS voice
+- `configs/glados2_bm_george_config.yaml` - Gemini with bm_george voice + MCP tools
+- `configs/glados2_mcp_config.yaml` - Gemini with MCP tools + salutation/valediction
+- `configs/glados2_config.yaml` - Ollama (local) with GLaDOS voice
 
 ## Architecture Overview
 
-### GLaDOS 1.0 (src/)
+See [ARCHITECTURE.md](ARCHITECTURE.md) for a detailed diagram.
 
-**Engine (`src/glados/engine.py`)**
-- Main `Glados` class orchestrates all components
-- Manages audio processing pipeline: VAD → ASR → LLM → TTS
-- Handles real-time audio streams with circular buffering
-- Implements wake word detection using Levenshtein distance
-- Maintains conversation context and memory
+### Directory Structure
+```
+src2/glados2/
+├── main.py                 # GladosApp orchestrator, CLI entry point
+├── core/
+│   ├── event_bus.py        # Central pub-sub message bus
+│   ├── state_manager.py    # Thread-safe state machine
+│   └── worker_loop.py      # Persistent async event loop for MCP/LLM
+├── audio/
+│   ├── audio_manager.py    # Audio pipeline orchestrator + device monitoring
+│   ├── vad_processor.py    # Voice Activity Detection (Silero VAD v5)
+│   ├── asr_processor.py    # Speech Recognition (Nemo Parakeet CTC)
+│   ├── tts_processor.py    # TTS factory (routes to GLaDOS or Kokoro)
+│   ├── tts_glados.py       # GLaDOS voice (VITS/Piper, 22050 Hz)
+│   └── tts_kokoro.py       # Kokoro voices (26 voices, 24000 Hz)
+├── llm/
+│   └── llm_manager.py      # LLM provider management, streaming, tool calling
+├── tools/
+│   ├── tool_types.py       # ToolSpec, ToolCall, ToolResult types
+│   ├── tool_manager.py     # Tool registry, execution, format conversion
+│   └── mcp_client.py       # MCP server stdio client
+├── config/
+│   └── config_manager.py   # YAML config with env var substitution
+└── ui/
+    └── app.py              # Textual TUI (conversation log, status, keybindings)
+```
 
-**Audio Processing Pipeline**
-- Voice Activity Detection (VAD) using Silero VAD model
-- Automatic Speech Recognition (ASR) using Nemo Parakeet model
-- Text-to-Speech (TTS) supporting GLaDOS and Kokoro voices
-- Real-time audio streaming with sounddevice
+### Core Architecture
 
-**LLM Integration (`src/glados/Extensions/llm/`)**
-- `OllamaToolManager` - Integration with Ollama for local LLMs
-- `GeminiAgent` - Google Gemini API integration
-- `MCPClient` - Model Context Protocol client for tool calling
-- `LanguageAgent` - Abstract base for LLM providers
+All components communicate exclusively through the **EventBus** pub-sub system. No direct coupling between components.
 
-**Extensions System**
-- Commands (`src/glados/Extensions/Commands/`) - Extensible command processing
-- Tools (`src/glados/Extensions/Tools/`) - Function calling capabilities
-- Memory (`src/glados/Extensions/vectors/`) - Vector-based memory storage
+**GladosApp** (`main.py`) is the top-level orchestrator that creates and wires all components via dependency injection.
 
-### GLaDOS 2.0 (src2/) - Event-Driven Architecture
+**EventBus** (`core/event_bus.py`) - Central message bus supporting sync and async subscribers.
 
-GLaDOS 2.0 is a complete refactor using a decoupled, event-driven architecture with pub-sub messaging.
+**StateManager** (`core/state_manager.py`) - Thread-safe state machine with enforced transitions:
+```
+INITIALIZING → IDLE → LISTENING → PROCESSING_AUDIO → CALLING_LLM → GENERATING_TTS → PLAYING_AUDIO → IDLE
+```
+- Any state can transition to SHUTTING_DOWN or ERROR
+- PLAYING_AUDIO → LISTENING (for continuous listening)
 
-**Core Components (`src2/glados2/core/`)**
-- `EventBus` - Central pub-sub message bus for decoupled communication
-- `StateManager` - Thread-safe application state machine with valid transitions
-- Event types: STATE_CHANGED, MESSAGE_RECEIVED, AUDIO_STATUS_CHANGED, AUDIO_DEVICE_CHANGED, LLM_RESPONSE_*, TTS_*, etc.
+**WorkerLoop** (`core/worker_loop.py`) - Persistent background event loop in a dedicated thread. Ensures MCP stdio sessions and LLM requests share the same loop.
 
-**Audio System (`src2/glados2/audio/`)**
-- `AudioManager` - Manages audio capture, playback, and device monitoring
-- `VADProcessor` - Silero VAD v5 with stateful LSTM inference
-- `ASRProcessor` - Nemo Parakeet with mel spectrogram features and CTC decoding
-- `TTSProcessor` - GLaDOS and Kokoro voice synthesis
-- `AudioDeviceMonitor` - Detects system audio device changes (AirPods, speakers, etc.)
+### Event Types
+```
+STATE_CHANGED, MESSAGE_RECEIVED, AUDIO_STATUS_CHANGED, AUDIO_DEVICE_CHANGED,
+LLM_RESPONSE_STARTED, LLM_RESPONSE_CHUNK, LLM_RESPONSE_COMPLETED,
+TTS_STARTED, TTS_COMPLETED, AUDIO_PLAYBACK_STARTED, AUDIO_PLAYBACK_COMPLETED,
+INTERRUPT_REQUESTED, LISTENING_STOPPED, ERROR_OCCURRED, SHUTDOWN_REQUESTED,
+TOOL_EXECUTION_STARTED, TOOL_EXECUTION_COMPLETED, TOOL_EXECUTION_ERROR,
+MCP_SERVER_CONNECTED, MCP_SERVER_DISCONNECTED, MCP_TOOLS_DISCOVERED
+```
 
-**LLM System (`src2/glados2/llm/`)**
-- `LLMManager` - Handles LLM interactions with streaming support
-- Supports Ollama, OpenAI, and Gemini providers
-- Mock responses for testing without API
+### Audio Pipeline
 
-**UI (`src2/glados2/ui/`)**
-- `GladosUI` - Textual-based terminal UI
-- Real-time status display, conversation history, waveform visualization
+```
+Mic (16kHz mono) → VAD (Silero v5, 512-sample windows) → ASR (Nemo Parakeet, mel spectrogram + CTC)
+    → MESSAGE_RECEIVED event → LLM → TTS (GLaDOS/Kokoro) → Speaker
+```
 
-**Key Architecture Patterns:**
-- All components communicate via EventBus (no direct coupling)
-- Async task scheduling from sync callbacks via `_schedule_async_task()`
-- State machine prevents invalid transitions
-- Audio pipeline: Capture → VAD → ASR → (publish MESSAGE_RECEIVED) → LLM → TTS → Playback
+**VAD:** Stateful LSTM inference, 0.8 threshold, 250ms min speech, 1000ms silence gap, 5s auto-stop.
 
-### Key Constants and Configuration
-- Sample rate: 16kHz for audio processing
-- VAD threshold: 0.8 for voice detection
-- Buffer size: 800ms before VAD detection
-- Pause limit: 1000ms before processing audio
-- Wake word similarity threshold: 3 (Levenshtein distance)
+**ASR:** Requires `audio_signal` (mel spectrogram: batch, 80, time_frames) and `length` (frame count as int64).
 
-### Model Files
-All models stored in `models/` directory:
+**TTS:** Factory pattern routes to GladosSynthesizer (22050 Hz) or KokoroSynthesizer (24000 Hz, 26 voices, IPA phonemes).
+
+### LLM Integration
+
+**Providers:** Ollama (local), OpenAI, Gemini (native google-genai SDK with thinking mode support).
+
+**Tool Calling:** LLM returns tool_calls → ToolManager executes → results fed back to LLM (max 5 iterations).
+
+**Response Summarization:** Long responses are summarized to ~150 words before TTS synthesis.
+
+### MCP/Tool System
+
+**ToolManager** - Registry for tools from MCP servers and built-in sources. Converts between OpenAI and Gemini tool formats. Executes with configurable timeouts (default 30s).
+
+**MCPClient** - Manages stdio-based MCP server connections. Auto-discovers tools on connect.
+
+### UI (Textual TUI)
+
+Key bindings: `q` quit, `l` toggle listening, `i` interrupt, `m` mute mic, `s` mute speaker, `t` debug, `p` text input, `c` compact mode.
+
+All UI callbacks are wrapped to execute on Textual's main thread.
+
+## Development Notes
+
+### Dependencies
+- `uv` for package management, Python 3.12+
+- ONNX Runtime for model inference (CUDA and CPU variants)
+- sounddevice for real-time audio I/O
+- google-genai for Gemini, openai for OpenAI/Ollama, mcp for tool protocol
+- textual for terminal UI
+
+### Code Style
+- Ruff for linting and formatting, line length 120
+- mypy in strict mode
+- Python 3.12+
+
+### Testing
+- Tests in `src2/tests/` using pytest + pytest-asyncio
+- Test modules: audio listening, TTS processor, LLM tool awareness, MCP integration, tool manager, worker loop
+
+### Key Constants
+- Sample rate: 16kHz
+- VAD threshold: 0.8
+- VAD window: 512 samples (32ms)
+- Buffer size: 800ms
+- Pause limit: 1000ms
+- Min speech duration: 250ms
+- Silence timeout: 5s
+
+### Model Files (`models/`)
 - ASR: `nemo-parakeet_tdt_ctc_110m.onnx` + `nemo-parakeet_tdt_ctc_110m_tokens.txt`
 - VAD: `silero_vad_v5.onnx`
 - TTS: `glados.onnx`, `kokoro-v1.0.fp16.onnx`
 - Phonemizer: `phomenizer_en.onnx`
 
-## Development Notes
-
-### Dependencies
-- Uses `uv` for fast Python package management
-- ONNX Runtime for model inference (supports CUDA, CPU variants)
-- sounddevice for real-time audio I/O
-- Supports both local (Ollama) and cloud (OpenAI/Gemini) LLMs
-
-### Code Style
-- Configured with ruff for linting and formatting
-- Line length: 120 characters  
-- Python 3.12+ required
-- Type hints enforced with mypy in strict mode
-
-### Testing
-- Tests located in `tests/` directory (v1) and `src2/tests/` (v2)
-- Test modules: commands, engine, spoken text converter, tool calls, memory
-- GLaDOS 2.0 tests: audio listening, TTS processor, VAD, ASR
-- Use pytest framework with pytest-asyncio for async tests
-
-## GLaDOS 2.0 Development Notes
-
 ### Important Patterns
 
 **Async Task Scheduling from Sync Callbacks**
-EventBus callbacks are synchronous, but often need to trigger async operations. Use `_schedule_async_task()`:
+EventBus callbacks are synchronous but often need to trigger async operations. Use WorkerLoop for MCP/LLM work, or `_schedule_async_task()` as fallback:
 ```python
 def _schedule_async_task(self, coro) -> None:
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(coro)
-    except RuntimeError:
-        # No running loop - run in new thread
+    if self._worker_loop and self._worker_loop.is_running:
+        self._worker_loop.run(coro)
+    else:
         thread = threading.Thread(target=lambda: asyncio.run(coro), daemon=True)
         thread.start()
 ```
 
-**State Transitions**
-The StateManager enforces valid transitions. Key flow:
-- IDLE → LISTENING → PROCESSING_AUDIO → CALLING_LLM → GENERATING_TTS → PLAYING_AUDIO → IDLE
-- Don't set state in multiple places for the same transition (causes race conditions)
-
 **Audio Device Detection**
-PortAudio caches device list. To detect changes (e.g., AirPods → speakers):
+PortAudio caches device list. AudioDeviceMonitor refreshes the cache to detect changes:
 ```python
 sd._terminate()
 sd._initialize()
-# Now query_devices() returns fresh data
 ```
 
-**ASR Model Requirements**
-Nemo Parakeet requires two inputs:
-- `audio_signal`: mel spectrogram (batch, 80, time_frames) - use MelSpectrogramCalculator
-- `length`: time frame count as int64 array
+**Textual App Reserved Attributes**
+- `App._main_thread` is a reserved bool in Textual - never use this name for custom methods.
+- `App._ready` is a reserved async method - use `_services_ready` instead.
 
-**VAD Model Requirements**
-Silero VAD v5 is stateful and requires:
-- `input`: audio chunk (batch, 512) for 16kHz
-- `state`: LSTM state (2, 1, 128) - must persist between calls
-- `sr`: sample rate as int64
-
-### Recent Fixes (Session History)
-
-1. **Audio device change detection** - Added AudioDeviceMonitor with PortAudio cache refresh
-2. **Async task scheduling** - Added `_schedule_async_task()` to AudioManager and LLMManager
-3. **ASR "required inputs 'length'" error** - Fixed by computing mel spectrogram and providing both inputs
-4. **LLM not receiving transcriptions** - Fixed race condition where AudioManager set CALLING_LLM state before LLMManager could transition
+### Configuration System
+YAML-based with dataclass config objects (AudioConfig, LLMConfig, TTSConfig, UIConfig, MCPServerConfig, ToolsConfig, GladosConfig). Supports `${VAR_NAME}` environment variable substitution and `.env` files.

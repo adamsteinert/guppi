@@ -111,7 +111,7 @@ class GladosUI(App[None]):
     - Better error handling and recovery
     """
     
-    TITLE = "GLaDOS 2.0"
+    TITLE = "GUPPI"
     SUB_TITLE = "Stable Voice Assistant"
     
     BINDINGS: ClassVar = [
