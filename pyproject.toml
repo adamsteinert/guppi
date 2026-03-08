@@ -26,6 +26,12 @@ dependencies = [
 cuda = ["onnxruntime-gpu>=1.16.0"]
 cpu = ["onnxruntime>=1.16.0"]
 dev = ["pytest", "ruff", "ipykernel", "types-requests", "types-PyYAML"]
+tts-server = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "lameenc>=1.7.0",
+    "scipy>=1.14.0",
+]
 
 
 [project.scripts]
@@ -39,10 +45,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatchling.build.targets.wheel]
-packages = ["src/glados", "src2/glados2"]
+packages = ["src/glados", "src2/glados2", "src2/tts_server"]
 
 [tool.hatchling.build]
-packages = ["src/glados", "src2/glados2"]
+packages = ["src/glados", "src2/glados2", "src2/tts_server"]
 
 # Ruff configuration
 [tool.ruff]

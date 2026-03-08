@@ -98,13 +98,16 @@ class TTSProcessor:
             except Exception as e:
                 logger.error(f"Failed to initialize Kokoro synthesizer: {e}")
 
-    async def synthesize_speech(self, text: str, voice: Optional[str] = None) -> Optional[np.ndarray]:
+    async def synthesize_speech(
+        self, text: str, voice: Optional[str] = None, speed: float = 1.0
+    ) -> Optional[np.ndarray]:
         """
         Synthesize speech from text.
 
         Args:
             text: Text to synthesize
             voice: Voice to use (overrides default)
+            speed: Speech speed multiplier (Kokoro only, 0.25-4.0)
 
         Returns:
             numpy array of audio samples, or None if synthesis failed
@@ -121,12 +124,12 @@ class TTSProcessor:
         # Run synthesis in thread pool to avoid blocking
         loop = asyncio.get_event_loop()
         try:
-            return await loop.run_in_executor(None, self._synthesize_sync, text, voice)
+            return await loop.run_in_executor(None, self._synthesize_sync, text, voice, speed)
         except Exception as e:
             logger.error(f"Error in async synthesis: {e}")
             return None
 
-    def _synthesize_sync(self, text: str, voice: str) -> Optional[np.ndarray]:
+    def _synthesize_sync(self, text: str, voice: str, speed: float = 1.0) -> Optional[np.ndarray]:
         """Synchronous synthesis method."""
         with self._lock:
             if self._cancelled.is_set():
@@ -142,7 +145,7 @@ class TTSProcessor:
             if voice == "glados":
                 result = self._synthesize_glados(text)
             elif voice.startswith(("af_", "am_", "bf_", "bm_")):
-                result = self._synthesize_kokoro(text, voice)
+                result = self._synthesize_kokoro(text, voice, speed=speed)
             else:
                 logger.warning(f"Unknown voice '{voice}', using fallback")
                 result = None
@@ -178,7 +181,7 @@ class TTSProcessor:
             logger.error(f"GLaDOS synthesis error: {e}")
             return None
 
-    def _synthesize_kokoro(self, text: str, voice: str) -> Optional[np.ndarray]:
+    def _synthesize_kokoro(self, text: str, voice: str, speed: float = 1.0) -> Optional[np.ndarray]:
         """Synthesize using Kokoro synthesizer."""
         if not self.kokoro_synthesizer:
             logger.warning("Kokoro synthesizer not available")
@@ -188,7 +191,7 @@ class TTSProcessor:
             return None
 
         try:
-            audio = self.kokoro_synthesizer.generate_speech_audio(text, voice=voice)
+            audio = self.kokoro_synthesizer.generate_speech_audio(text, voice=voice, speed=speed)
 
             if audio is not None:
                 logger.debug(f"Kokoro synthesis completed: {len(audio)} samples @ 24kHz")
