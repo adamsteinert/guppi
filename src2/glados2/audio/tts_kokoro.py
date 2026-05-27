@@ -43,7 +43,7 @@ class KokoroSynthesizer:
     """
 
     # Constants
-    MAX_PHONEME_LENGTH = 510
+    MAX_CHUNK_PHONEMES = 509  # Max phonemes per inference chunk (voice embedding has 510 slots, 0-indexed)
     SAMPLE_RATE = 24000
 
     def __init__(
@@ -204,37 +204,46 @@ class KokoroSynthesizer:
                 return None
 
             # Step 2: Convert phonemes to IDs using IPA vocabulary
-            ids = self._phonemes_to_ids(phonemes)
-            logger.debug(f"Phoneme IDs ({len(ids)}): {ids[:20]}...")
+            all_ids = self._phonemes_to_ids(phonemes)
+            logger.debug(f"Phoneme IDs ({len(all_ids)}): {all_ids[:20]}...")
 
-            if len(ids) == 0:
+            if len(all_ids) == 0:
                 logger.error("No phoneme IDs generated")
                 return None
 
-            # Step 3: Wrap with BOS/EOS markers
-            tokens = [[0, *ids, 0]]
+            # Step 3: Split into chunks if needed (voice embeddings support up to MAX_CHUNK_PHONEMES)
+            chunks = [
+                all_ids[i : i + self.MAX_CHUNK_PHONEMES]
+                for i in range(0, len(all_ids), self.MAX_CHUNK_PHONEMES)
+            ]
+            if len(chunks) > 1:
+                logger.debug(f"Splitting {len(all_ids)} phoneme IDs into {len(chunks)} chunks")
 
-            # Step 4: Get voice embedding based on phoneme length
-            voice_array = self._get_voice_embedding(voice, len(ids))
+            audio_parts: list[np.ndarray] = []
+            for chunk_ids in chunks:
+                # Wrap with BOS/EOS markers
+                tokens = [[0, *chunk_ids, 0]]
 
-            # Step 5: Run Kokoro TTS inference
-            outputs = self.session.run(
-                None,
-                {
-                    "tokens": tokens,
-                    "style": voice_array,
-                    "speed": np.ones(1, dtype=np.float32) * speed,
-                },
-            )
+                # Get voice embedding based on chunk phoneme length
+                voice_array = self._get_voice_embedding(voice, len(chunk_ids))
 
-            # Step 6: Extract and trim audio
-            audio = outputs[0]
+                # Run Kokoro TTS inference
+                outputs = self.session.run(
+                    None,
+                    {
+                        "tokens": tokens,
+                        "style": voice_array,
+                        "speed": np.ones(1, dtype=np.float32) * speed,
+                    },
+                )
 
-            # Remove the last 1/3 second (8000 samples @ 24kHz) - Kokoro adds silence
-            if len(audio) > 8000:
-                audio = audio[:-8000]
+                # Extract and trim trailing silence Kokoro adds
+                chunk_audio = outputs[0]
+                if len(chunk_audio) > 8000:
+                    chunk_audio = chunk_audio[:-8000]
+                audio_parts.append(np.array(chunk_audio, dtype=np.float32))
 
-            audio_data = np.array(audio, dtype=np.float32)
+            audio_data = np.concatenate(audio_parts) if len(audio_parts) > 1 else audio_parts[0]
             logger.debug(f"Kokoro synthesis completed: {len(audio_data)} samples @ {self.sample_rate}Hz")
 
             return audio_data
@@ -255,10 +264,6 @@ class KokoroSynthesizer:
         Returns:
             List of phoneme IDs
         """
-        if len(phonemes) > self.MAX_PHONEME_LENGTH:
-            logger.warning(f"Text too long ({len(phonemes)} phonemes), truncating to {self.MAX_PHONEME_LENGTH}")
-            phonemes = phonemes[:self.MAX_PHONEME_LENGTH]
-
         # Map each IPA phoneme character to its ID
         ids = [self.vocab.get(p) for p in phonemes]
         ids = [i for i in ids if i is not None]
@@ -271,6 +276,7 @@ class KokoroSynthesizer:
 
         CRITICAL: Voice embeddings are indexed by phoneme sequence LENGTH!
         The voice file contains 510 style vectors, one for each possible length (0-509).
+        Chunks must be kept within MAX_CHUNK_PHONEMES to stay in valid range.
 
         Args:
             voice: Voice name
